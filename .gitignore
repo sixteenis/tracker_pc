@@ -1,0 +1,40 @@
+# Rust 빌드 산출물
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo lock 은 바이너리 프로젝트라 커밋 (lib 였으면 ignore).
+# Cargo.lock
+
+# 로컬 SQLite (앱이 OS 데이터 디렉토리에 만들지만 혹시 모를 백업)
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+*.db-wal
+*.db-shm
+
+# 사용자별 환경설정 / 시크릿
+config/local.toml
+.env
+.env.*
+!.env.example
+
+# 로그
+*.log
+logs/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Inno Setup / WiX 산출물
+*.exe
+*.msi
+*.iss.bak
+Output/

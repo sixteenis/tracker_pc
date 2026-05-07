@@ -1,0 +1,38 @@
+# 핀플 PC 앱 기본 설정
+# 사용자별 설정 파일은 OS 설정 디렉토리에 자동 생성됩니다.
+# Windows: %APPDATA%\Pinple\PCAgent\config.toml
+# macOS:   ~/Library/Application Support/Pinple/PCAgent/config.toml
+
+[api]
+# 실 서버 URL. Mock 모드에서는 호출되지 않음.
+base_url = "https://api.pinple.io"
+timeout_seconds = 15
+# true 로 설정하면 모든 네트워크 호출이 in-process 가짜 응답으로 처리됨.
+mock_mode = true
+
+[app]
+app_version = "0.1.0"
+# 시스템 트레이로 최소화 시 메인 창 숨김.
+hide_to_tray_on_close = true
+
+[intervals]
+# 모든 값은 초 단위.
+idle_check_interval_seconds       = 5
+heartbeat_interval_seconds        = 180
+event_batch_interval_seconds      = 60
+policy_check_interval_seconds     = 1800
+update_check_interval_seconds     = 43200
+max_events_per_batch              = 50
+
+[policy_defaults]
+# 서버 정책 미수신 시 fallback.
+# ※ 테스트용으로 5초로 설정. 운영 시에는 600(10분) 등으로 복원할 것.
+default_idle_threshold_seconds    = 5
+default_lunch_start_time          = "11:30"
+default_lunch_end_time            = "14:00"
+default_lunch_allowed_minutes     = 60
+
+[logging]
+# trace, debug, info, warn, error
+level = "info"
+# 토큰/비밀번호는 절대 기록되지 않음.

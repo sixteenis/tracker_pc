@@ -1,0 +1,79 @@
+[package]
+name = "pinple_pc_agent"
+version = "0.1.0"
+edition = "2021"
+authors = ["Pinple"]
+description = "Pinple PC Agent - 근무시간 소명 윈도우 앱 (1차 MVP)"
+license = "Proprietary"
+
+[[bin]]
+name = "pinple_pc_agent"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+# HTTP
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# DB
+rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# IDs / Crypto
+uuid = { version = "1", features = ["v4", "serde"] }
+sha2 = "0.10"
+hex = "0.4"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+# Errors
+thiserror = "1"
+anyhow = "1"
+
+# Config / dirs
+directories = "5"
+once_cell = "1"
+
+# Secure token store (DPAPI on Windows, Keychain on macOS, Secret Service on Linux)
+keyring = "2"
+
+# UI (egui via eframe)
+eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow", "persistence"] }
+egui = "0.29"
+egui_extras = { version = "0.29", features = ["all_loaders"] }
+
+# Toast notifications (Windows: WinRT toast / Mac: NSUserNotification)
+notify-rust = "4"
+
+# Random for jitter
+rand = "0.8"
+
+# Tray icon (cross-platform) — 1차 MVP 에서는 의존성만 잡아두고 실제 통합은 2차에서.
+# tray-icon = "0.13"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.56", features = [
+  "Win32_Foundation",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_System_SystemInformation",
+] }
+winreg = "0.52"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
