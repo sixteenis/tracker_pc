@@ -88,26 +88,24 @@ pub fn show(ctx: &egui::Context, state: &Arc<AppState>, route: &mut Route) {
         });
 
     // ── 메인 콘텐츠 ───────────────────────────────────────────────
-    // CentralPanel에는 margin 없이, ScrollArea 내부에서 padding을 직접 관리.
-    // 이렇게 해야 오른쪽 floating scrollbar가 padding 영역에만 겹치고
-    // 컨텐츠는 좌우 동일한 20px 여백을 유지한다.
+    // Frame::inner_margin 으로 감싸서 모든 자식이 동일한 available_width = W-40 을 받음.
+    // ui.horizontal+add_space 방식은 vertical 내부에서 available_width = W-20 을 리턴하므로
+    // 타임라인 같은 full-width 요소가 right padding 을 무시하게 됨.
     egui::CentralPanel::default()
         .frame(egui::Frame::none().fill(BG))
         .show(ctx, |ui| {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    let pad = 20.0;
                     let gap = 8.0;
-                    // 컨텐츠 유효 폭: 전체 - 좌우 패딩
-                    let content_w = ui.available_width() - pad * 2.0;
 
-                    ui.add_space(pad); // 상단 여백
-
-                    // 모든 컨텐츠를 좌측 pad 만큼 indent 해서 우측도 동일하게 맞춤
-                    ui.horizontal(|ui| {
-                        ui.add_space(pad);
-                        ui.vertical(|ui| {
+                    egui::Frame::none()
+                        .inner_margin(egui::Margin::same(20.0))
+                        .show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
+                            // 이제 ui.available_width() = W - 40 (좌우 20px 패딩 적용)
+                            let content_w = ui.available_width();
+                            {
 
                     // ── 출근/퇴근 카드 ────────────────────────────
                     let card1_w = 200.0_f32.min(content_w * 0.24);
@@ -384,10 +382,8 @@ pub fn show(ctx: &egui::Context, state: &Arc<AppState>, route: &mut Route) {
                         );
                     });
 
-                        }); // ui.vertical
-                    }); // ui.horizontal (left pad)
-
-                    ui.add_space(pad); // 하단 여백
+                            } // content block
+                        }); // Frame::inner_margin
                 }); // ScrollArea
         }); // CentralPanel
 }
