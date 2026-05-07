@@ -31,6 +31,28 @@ use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
 
+/// Windows 전용: Win32 API 로 창을 직접 복원 + 전면으로 가져오기.
+/// eframe 의 ViewportCommand 와 독립적으로 동작하므로, update() 호출 여부와 무관.
+/// 트레이 메뉴 클릭 직후에 호출 → Windows 가 foreground 전환을 허용하는 타이밍.
+#[cfg(windows)]
+fn native_show_window() {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE,
+    };
+
+    // 창 제목 "핀플 PC" — main.rs eframe::run_native 의 첫 번째 인자와 동일해야 함.
+    let title: Vec<u16> = "핀플 PC\0".encode_utf16().collect();
+    unsafe {
+        let hwnd = FindWindowW(PCWSTR(std::ptr::null()), PCWSTR(title.as_ptr()));
+        if hwnd.0 == 0 {
+            return; // 창을 찾지 못함 (아직 초기화 중이거나 창 제목 불일치)
+        }
+        let _ = ShowWindow(hwnd, SW_RESTORE);
+        let _ = SetForegroundWindow(hwnd);
+    }
+}
+
 /// 트레이 메뉴 클릭 결과. `update()` 가 라우팅에 반영.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayCommand {
@@ -111,21 +133,22 @@ fn spawn_poll_thread(
                 // 메뉴 클릭 처리
                 while let Ok(ev) = menu_rx.try_recv() {
                     let cmd = if ev.id == show_id {
+                        // Windows: eframe request_repaint 과 별개로 Win32 직접 복원.
+                        // 창이 최소화 중이거나 update() 가 늦게 도는 경우도 즉시 처리.
+                        #[cfg(windows)]
+                        native_show_window();
                         Some(TrayCommand::Show)
                     } else if ev.id == explanation_id {
+                        #[cfg(windows)]
+                        native_show_window();
                         Some(TrayCommand::OpenExplanation)
                     } else if ev.id == quit_id {
-                        // 사용자가 명시적 종료 요청 — 안전장치 활성화.
-                        // UI 정상 경로가 1.5~2초 안에 끝나면 process 가 그 전에 사라져
-                        // 본 thread 도 함께 죽음. 못 끝내면 강제 exit.
-                        std::thread::Builder::new()
-                            .name("tray-quit-fallback".into())
-                            .spawn(|| {
-                                std::thread::sleep(Duration::from_millis(2000));
-                                tracing::warn!("정상 종료가 2초 내 완료되지 않아 강제 종료합니다");
-                                std::process::exit(0);
-                            })
-                            .ok();
+                        // 1.5초 안전장치: UI 정상 종료가 빠르면 프로세스 소멸로 thread 도 사라짐.
+                        // tracing 없음 — 종료 경로에서 logger lock 데드락 방지.
+                        std::thread::spawn(|| {
+                            std::thread::sleep(Duration::from_millis(1500));
+                            std::process::exit(0);
+                        });
                         Some(TrayCommand::Quit)
                     } else {
                         None
@@ -138,6 +161,8 @@ fn spawn_poll_thread(
 
                 // 트레이 아이콘 좌클릭/더블클릭 → 창 보이기 (Windows 일관성)
                 while tray_rx.try_recv().is_ok() {
+                    #[cfg(windows)]
+                    native_show_window();
                     let _ = tx.send(TrayCommand::Show);
                     woke = true;
                 }

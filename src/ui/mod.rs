@@ -159,8 +159,10 @@ impl App for PinpleApp {
             && ctx.input(|i| i.viewport().close_requested())
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            tracing::info!("창을 트레이로 숨김 — 백그라운드에서 idle 감지가 계속됩니다");
+            // Minimized(true) 는 Visible(false) 와 달리 Windows 메시지 루프를 유지.
+            // SW_HIDE 로 숨기면 update() 가 불리지 않아 트레이 명령이 처리되지 않음.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            tracing::info!("창을 최소화 — 백그라운드에서 idle 감지가 계속됩니다");
         }
 
         if matches!(self.route, Route::Login) && self.state.is_logged_in() {
