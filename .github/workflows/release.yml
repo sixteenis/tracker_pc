@@ -1,0 +1,155 @@
+name: Release Build
+
+# 사용법:
+#   git tag v0.1.0 && git push origin v0.1.0
+# → Windows / macOS(intel) / macOS(apple silicon) 바이너리를 빌드하고 GitHub Release 에 첨부.
+# 수동 실행도 가능: Actions 탭 → "Release Build" → "Run workflow".
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '릴리즈 버전 태그 (예: v0.1.0)'
+        required: true
+        default: 'v0.0.0-dev'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  APP_NAME: pinple_pc_agent
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: Windows (x64)
+            ext: .exe
+          - os: macos-13       # Intel
+            target: x86_64-apple-darwin
+            label: macOS (Intel)
+            ext: ''
+          - os: macos-14       # Apple Silicon
+            target: aarch64-apple-darwin
+            label: macOS (Apple Silicon)
+            ext: ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust 툴체인 + 타겟
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: 릴리즈 빌드
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # ── Windows 패키징: 단일 .exe + (선택) Inno Setup 인스톨러 ────────────
+      - name: Windows — exe 패키징
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $stage = "dist"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\${{ env.APP_NAME }}.exe" "$stage\"
+          Copy-Item "README.md" "$stage\"
+          Copy-Item "config\default.toml" "$stage\config.example.toml"
+          Compress-Archive -Path "$stage\*" -DestinationPath "${{ env.APP_NAME }}-${{ matrix.target }}.zip" -Force
+
+      - name: Windows — Inno Setup 인스톨러 (선택, installer/pinple.iss 존재 시)
+        if: runner.os == 'Windows' && hashFiles('installer/pinple.iss') != ''
+        uses: Minionguyjpro/Inno-Setup-Action@v1.2.5
+        with:
+          path: installer/pinple.iss
+          options: /DAppVersion=${{ github.ref_name }} /DSourceExe=${{ github.workspace }}\target\${{ matrix.target }}\release\${{ env.APP_NAME }}.exe
+
+      # ── macOS 패키징: 단일 바이너리 zip (.app 번들/공증은 별도 키 필요해 1차 MVP 에서 생략) ─
+      - name: macOS — bin 패키징
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -e
+          stage=dist
+          mkdir -p "$stage"
+          cp "target/${{ matrix.target }}/release/${APP_NAME}" "$stage/"
+          cp README.md "$stage/"
+          cp config/default.toml "$stage/config.example.toml"
+          chmod +x "$stage/${APP_NAME}"
+          # macOS 가 다운받은 바이너리를 격리(quarantine) 하면 처음 실행 시 차단됩니다.
+          # 사용자가 다음 명령으로 풀 수 있다는 안내를 README 에 적어두는 것을 권장:
+          #   xattr -dr com.apple.quarantine ./pinple_pc_agent
+          tar czf "${APP_NAME}-${{ matrix.target }}.tar.gz" -C "$stage" .
+
+      - name: 산출물 업로드 (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            ${{ env.APP_NAME }}-${{ matrix.target }}.zip
+            installer/Output/*.exe
+          if-no-files-found: ignore
+
+      - name: 산출물 업로드 (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.APP_NAME }}-${{ matrix.target }}.tar.gz
+
+  release:
+    name: GitHub Release 생성
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # release 생성에 필요
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 산출물 다운로드
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: 디렉토리 구조 확인
+        run: ls -R artifacts
+
+      - name: GitHub Release 발행
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: |
+            핀플 PC 앱 ${{ github.ref_name }} 릴리즈
+
+            **다운로드 안내**
+
+            | 플랫폼 | 파일 |
+            |--------|------|
+            | Windows x64 | `pinple_pc_agent-x86_64-pc-windows-msvc.zip` |
+            | macOS Intel | `pinple_pc_agent-x86_64-apple-darwin.tar.gz` |
+            | macOS Apple Silicon | `pinple_pc_agent-aarch64-apple-darwin.tar.gz` |
+
+            **macOS 사용자 주의** — 코드 서명 미적용 빌드입니다. 처음 실행 전:
+            ```
+            xattr -dr com.apple.quarantine ./pinple_pc_agent
+            ```
+
+            **Windows 사용자 주의** — SmartScreen 경고가 뜰 수 있습니다.
+            "추가 정보" → "실행" 으로 진행하거나, Inno Setup 인스톨러 사용을 권장합니다.
+          generate_release_notes: true
+          files: artifacts/**/*
+          fail_on_unmatched_files: false

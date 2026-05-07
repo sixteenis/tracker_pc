@@ -211,8 +211,49 @@ rust_test/
 
 ---
 
-## 6. 추가 자료
+## 6. CI / Release (GitHub Actions)
+
+`.github/workflows/` 에 두 워크플로우가 있습니다.
+
+| 파일 | 트리거 | 동작 |
+|------|--------|------|
+| `ci.yml` | `main` push, PR | Linux/Windows/macOS 3개 OS 에서 `cargo test` + `cargo build` |
+| `release.yml` | `v*` 태그 push, 또는 수동 실행 | Windows x64 / macOS Intel / macOS Apple Silicon 빌드 → GitHub Release 자동 첨부. `installer/pinple.iss` 가 있으면 Inno Setup 인스톨러 (`PinplePCAgent_Setup_<버전>.exe`) 도 함께 생성 |
+
+### 6-1. 새 릴리즈 만드는 법
+
+```bash
+# 버전 올리고 커밋
+sed -i '' 's/^version = .*/version = "0.2.0"/' Cargo.toml   # macOS BSD sed
+git add Cargo.toml
+git commit -m "release: v0.2.0"
+
+# 태그 푸시 → 워크플로우 자동 실행
+git tag v0.2.0
+git push origin main --tags
+```
+
+GitHub Actions 의 `Release Build` 워크플로우가 끝나면 `Releases` 탭에 다음 산출물이 첨부됩니다:
+
+- `pinple_pc_agent-x86_64-pc-windows-msvc.zip`
+- `PinplePCAgent_Setup_v0.2.0.exe` (Inno Setup 인스톨러)
+- `pinple_pc_agent-x86_64-apple-darwin.tar.gz`
+- `pinple_pc_agent-aarch64-apple-darwin.tar.gz`
+
+### 6-2. 코드 서명 (2차에서 결정)
+
+| OS | 미서명 시 사용자 경험 | 서명 방법 |
+|----|----------------------|----------|
+| Windows | SmartScreen 경고 → "추가 정보" → "실행" | EV 코드 사이닝 인증서 구입 후 `signtool.exe` 로 서명. workflow 에 `azure/trusted-signing-action` 추가 가능 |
+| macOS | Gatekeeper 차단 → 사용자가 `xattr -dr com.apple.quarantine` 또는 우클릭→열기 | Apple Developer ID + notarytool 공증. workflow 에 인증서/시크릿 등록 후 `apple-actions/import-codesign-certs` |
+
+1차 MVP 는 사내 배포 가정이라 미서명으로 두고, 외부 배포 단계에서 추가합니다.
+
+---
+
+## 7. 추가 자료
 
 - API 요청/응답 상세: [`docs/api.md`](docs/api.md)
 - 테스트 시나리오: [`docs/test_scenarios.md`](docs/test_scenarios.md)
 - 로컬 SQLite 스키마: [`migrations/0001_init.sql`](migrations/0001_init.sql)
+- Inno Setup 스크립트: [`installer/pinple.iss`](installer/pinple.iss)

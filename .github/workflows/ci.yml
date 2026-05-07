@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: 빌드 / 테스트 검증
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust 툴체인 설치
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cargo 캐시
+        uses: Swatinem/rust-cache@v2
+
+      # eframe / glutin 등 GUI 의존성 빌드에 필요한 시스템 패키지 (Linux 만).
+      - name: Linux GUI 의존성
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+                                  libxkbcommon-dev libssl-dev libdbus-1-dev pkg-config
+
+      - name: 포맷 검사
+        run: cargo fmt --all -- --check
+        continue-on-error: true   # 1차 MVP — 포맷 강제 안 함
+
+      - name: 클리피
+        run: cargo clippy --all-targets --no-deps -- -D warnings
+        continue-on-error: true   # 경고 16개 정리 전까지 fail 안 시킴
+
+      - name: 단위 테스트
+        run: cargo test --all-targets
+
+      - name: 디버그 빌드
+        run: cargo build --all-targets
