@@ -65,6 +65,30 @@ fn main() -> anyhow::Result<()> {
         "로드된 정책 fallback / 인터벌"
     );
 
+    // 1-1. 단일 인스턴스 보장 — 같은 PC 에 두 번째 실행 차단.
+    //   Windows : Named Mutex (CreateMutexW)
+    //   macOS   : abstract socket (POSIX-like)
+    //   Linux   : abstract socket
+    // 인스턴스 가드는 main 끝까지 살아있어야 lock 유지됨 → `_instance_guard` 로 보관.
+    let _instance_guard = match single_instance::SingleInstance::new("io.pinple.pcagent.v1") {
+        Ok(inst) if inst.is_single() => Some(inst),
+        Ok(_already_running) => {
+            tracing::warn!("핀플 PC 가 이미 실행 중입니다 — 두 번째 인스턴스를 종료합니다");
+            // OS 알림으로 사용자에게 안내 (실패해도 무시).
+            let _ = notify_rust::Notification::new()
+                .summary("핀플 PC")
+                .body("이미 실행 중입니다.\n시스템 트레이 아이콘을 확인해 주세요.")
+                .show();
+            return Ok(());
+        }
+        Err(e) => {
+            // 락 생성 자체에 실패하면 (드물게 권한 문제 등) 로그만 남기고 계속 진행.
+            // 정책상 단일 인스턴스 강제보다 사용자가 일단 앱을 쓸 수 있는 게 우선.
+            tracing::warn!(error = %e, "단일 인스턴스 락 생성 실패 — 중복 실행 검사 없이 진행");
+            None
+        }
+    };
+
     // 2. 비동기 런타임 — 백그라운드 동기화/감지 루프 전용.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -88,9 +112,8 @@ fn main() -> anyhow::Result<()> {
     sync::spawn_all(state.clone());
 
     // 7. UI 메인 루프 (egui — 자체 이벤트 루프 점유)
-    // TODO(2차): 트레이 아이콘 통합. 현재 `Cargo.toml` 의 `tray-icon` 의존성은 주석.
-    // egui/winit 이벤트 루프 안에서 tray 메시지를 받으려면 별도 thread + IPC 채널 필요.
-    // TODO(2차): 닫기(X) 클릭 시 `hide_to_tray_on_close = true` 면 종료 대신 트레이로 최소화.
+    //    트레이 아이콘 + 백그라운드 동작은 `ui::tray` 모듈에서 처리.
+    //    창의 X(닫기) 클릭 시 트레이로 숨겨지고, 트레이 메뉴 "종료" 로만 정말 종료.
     let ui_state = state.clone();
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

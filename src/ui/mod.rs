@@ -85,7 +85,9 @@ impl PinpleApp {
             Route::Login
         };
 
-        let tray = match tray::TrayHandle::new() {
+        // 트레이 폴링 thread 가 ctx.request_repaint() 로 update() 를 깨워야 하므로
+        // egui Context 를 복제해서 전달.
+        let tray = match tray::TrayHandle::new(cc.egui_ctx.clone()) {
             Ok(t) => {
                 info!("트레이 아이콘 초기화 완료 — 창 닫아도 백그라운드에서 계속 동작합니다");
                 Some(t)
@@ -118,11 +120,14 @@ impl App for PinpleApp {
                 use tray::TrayCommand::*;
                 match cmd {
                     Show => {
+                        // 숨김 + 최소화 양쪽을 모두 풀고 포커스 가져오기.
                         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     }
                     OpenExplanation => {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                         if self.state.is_logged_in() {
                             self.route = Route::ExplanationList;
@@ -133,21 +138,14 @@ impl App for PinpleApp {
                         // APP_STOPPED 이벤트 enqueue (다음 배치에서 전송).
                         let _ = crate::monitor::lifecycle::record_stopped(&self.state);
 
-                        // 트레이 아이콘을 명시적으로 드롭 — TrayIcon::Drop 이
-                        // Shell_NotifyIcon(NIM_DELETE) 를 호출하면서 트레이에서 즉시 제거.
-                        // (Windows 가 자동 redraw 하지 않을 때 잔상 icon 이 남는 문제 방지)
+                        // 트레이 아이콘 명시적 드롭 — TrayIcon::Drop 이 NIM_DELETE 호출하며
+                        // 트레이에서 즉시 제거 (Windows ghost icon 방지).
                         self.tray = None;
 
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
 
-                        // 안전장치 — Close 가 어떤 이유로든 처리되지 않거나 백그라운드
-                        // task 가 종료를 막을 경우 1.5초 뒤 강제 exit. 정상 경로면
-                        // 그 전에 프로세스가 사라져 이 thread 도 함께 죽음.
-                        std::thread::spawn(|| {
-                            std::thread::sleep(std::time::Duration::from_millis(1500));
-                            tracing::warn!("정상 종료가 1.5초 내 완료되지 않아 강제 종료합니다");
-                            std::process::exit(0);
-                        });
+                        // force-exit fallback 은 tray polling thread 안에 있음.
+                        // 여기서 별도로 안 띄움.
                     }
                 }
             }

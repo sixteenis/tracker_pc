@@ -64,6 +64,9 @@ rand = "0.8"
 # Tray icon (cross-platform) — 닫기 시 백그라운드 동작용.
 tray-icon = "0.13"
 
+# 단일 인스턴스 보장 — Windows 는 Named Mutex, Unix 는 abstract socket.
+single-instance = "0.3"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.56", features = [
   "Win32_Foundation",
