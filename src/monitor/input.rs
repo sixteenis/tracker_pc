@@ -1,19 +1,29 @@
-//! 마지막 사용자 입력 이후 경과 시간 (초).
+//! ============================================================================
+//! monitor::input — 마지막 사용자 입력 이후 경과 시간 (초) 측정.
+//! ============================================================================
 //!
-//! - Windows: `GetLastInputInfo` Win32 API (운영 대상).
-//! - macOS:   `ioreg -c IOHIDSystem` 의 `HIDIdleTime` 파싱 (개발/테스트용).
-//! - Linux:   stub 0 (또는 PINPLE_FAKE_IDLE).
+//! - Windows : `GetLastInputInfo` Win32 API (운영 대상).
+//! - macOS   : `ioreg -c IOHIDSystem` 의 `HIDIdleTime` 파싱 (개발/테스트용).
+//! - Linux   : stub 0 (또는 `PINPLE_FAKE_IDLE`).
 //!
-//! macOS 구현은 매 호출마다 짧은 자식 프로세스를 띄우므로 5 초 폴링 정도까지만
+//! 환경변수 `PINPLE_FAKE_IDLE=N` 으로 강제 idle 값 주입 (테스트용).
+//!
+//! macOS 구현은 매 호출마다 짧은 자식 프로세스를 띄우므로 5초 폴링 정도까지만
 //! 적합하다. 운영 환경(Windows) 에서는 순수 Win32 호출이라 비용이 거의 없다.
+//!
+//! TODO(2차): macOS 도 `IOKit` 직접 FFI 로 교체 (자식 프로세스 안 띄우게).
+//! TODO(2차): Linux 도 X11 `XScreenSaverQueryInfo` 또는 Wayland idle protocol 지원.
 
-/// 환경변수로 idle 값을 강제 주입할 수 있는 공통 훅 (모든 OS).
+/// 환경변수 `PINPLE_FAKE_IDLE=<seconds>` 가 있으면 OS API 대신 그 값을 반환.
+/// 모든 OS 의 `idle_seconds()` 가 호출 첫머리에서 한 번 확인한다.
 fn fake_override() -> Option<u64> {
     std::env::var("PINPLE_FAKE_IDLE")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
 }
 
+/// Windows 운영 구현. `GetTickCount` 와의 차이로 ms → s 환산.
+/// 시스템 부팅 후 49.7일 후 GetTickCount overflow → saturating_sub 로 음수 방지.
 #[cfg(windows)]
 pub fn idle_seconds() -> u64 {
     if let Some(v) = fake_override() {
@@ -37,6 +47,8 @@ pub fn idle_seconds() -> u64 {
     }
 }
 
+/// macOS 테스트용 구현. ioreg 자식 프로세스 spawn 후 stdout 파싱.
+/// HIDIdleTime 단위는 나노초 → / 1_000_000_000 으로 초 변환.
 #[cfg(target_os = "macos")]
 pub fn idle_seconds() -> u64 {
     if let Some(v) = fake_override() {
@@ -72,6 +84,8 @@ pub fn idle_seconds() -> u64 {
     0
 }
 
+/// Linux/기타 — 1차 MVP 미구현. 항상 0 반환 (자리비움 영원히 발생 안 함).
+/// PINPLE_FAKE_IDLE 환경변수로만 강제 가능.
 #[cfg(all(not(windows), not(target_os = "macos")))]
 pub fn idle_seconds() -> u64 {
     fake_override().unwrap_or(0)

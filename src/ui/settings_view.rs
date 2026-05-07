@@ -1,3 +1,21 @@
+// ============================================================================
+// ui::settings_view — 환경설정 화면 (3 탭).
+// ============================================================================
+//
+// 탭 구성:
+//   - 일반     : 자동 실행 / 알림 / 트레이 토글 (현재는 메모리 only)
+//   - 감지 설정: 정책 정보 read-only
+//   - 계정     : 사번/팀/기기/버전 + 로그아웃 버튼
+//
+// TODO(미구현): 토글 3개 (auto_start / notifications / tray_icon) 가 화면에서만
+// 동작. 실제 OS 설정 적용 안 됨.
+//   - auto_start  : Windows 의 HKCU\...\Run 레지스트리 또는 macOS LaunchAgent
+//   - notifications: notify::show_explanation_request 호출 전 토글 체크
+//   - tray_icon   : tray-icon 의존성 통합 (1차에서는 비활성)
+// TODO(미구현): "프로그램 종료 허용" 정책이 표시만 되고 실제 강제 적용 안 됨.
+// 관리자가 끄면 사용자가 종료 못 하게 하려면 Windows shell hook 또는 별도 watchdog 필요.
+// TODO(영속화): 토글 상태를 `db::settings_repo` 에 저장해서 재시작 후에도 유지.
+
 use std::sync::Arc;
 
 use eframe::egui;

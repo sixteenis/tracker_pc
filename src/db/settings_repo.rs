@@ -1,10 +1,22 @@
-//! `settings` (key/value) 단순 저장소 — 정책 캐시, 마지막 동기화 시각 등.
+//! ============================================================================
+//! db::settings_repo — `settings` 테이블 (단순 key/value 저장소).
+//! ============================================================================
+//!
+//! 사용처:
+//!   - `device_id`, `device_name` (기기 식별)
+//!   - `last_heartbeat_at` (앱 비정상 종료 시 NO_PC_RECORD 계산 기준)
+//!
+//! 가벼운 메타데이터만 들어가야 하며, 큰 데이터(이벤트/segment) 는 전용 테이블 사용.
+//!
+//! TODO(2차): 사용자 환경설정(자동시작/알림/트레이) 토글값을 여기에 영속화.
+//! 현재는 `ui::settings_view` 메모리에서만 살아있다.
 
 use anyhow::Result;
 use chrono::Utc;
 
 use super::Database;
 
+/// 키로 값 조회. 없으면 `Ok(None)`.
 pub fn get(db: &Database, key: &str) -> Result<Option<String>> {
     let conn = db.lock();
     let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
@@ -16,6 +28,7 @@ pub fn get(db: &Database, key: &str) -> Result<Option<String>> {
     }
 }
 
+/// 키/값 upsert. 같은 키가 있으면 덮어쓴다.
 pub fn set(db: &Database, key: &str, value: &str) -> Result<()> {
     let conn = db.lock();
     conn.execute(

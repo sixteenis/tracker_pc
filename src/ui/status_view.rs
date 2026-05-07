@@ -1,3 +1,21 @@
+// ============================================================================
+// ui::status_view — 메인 상태 화면 (로그인 후 기본 화면).
+// ============================================================================
+//
+// 구성:
+//   1) 오렌지 헤더 — 사번/팀명 + PC 상태 배지
+//   2) 출근 카드(흰) + 출퇴근 안내 카드(네이비, 소명 N건 진입 버튼)
+//   3) 통계 카드 2개 — 오늘 PC 사용 / 오늘 미사용 누적
+//   4) 활동 감지 타임라인 — 09:00 ~ 현재까지 시각화
+//   5) 하단 버튼 3개 — 적용된 정책 / 지금 동기화 / 오늘 기록 보기
+//   6) 개인정보 안내 한 줄
+//
+// TODO(미구현): "지금 동기화" 버튼이 로그만 찍고 실제 동기화 트리거 안 함.
+// `sync` 레이어에 mpsc 채널 추가해서 즉시 트리거되게 해야 함.
+// TODO(미구현): "적용된 정책 (관리자 설정)" 토글 펼치기 — 펼침 영역에 회사/팀/개인
+// 기준 시간 표 + 우선순위 표시 (현재는 헤더만 있고 펼쳐도 비어있음 가능).
+// TODO(2차): 타임라인 시작 시각이 09:00 으로 하드코딩 — 출근 시각 기준으로 동적 변경.
+
 use std::sync::Arc;
 
 use chrono::{Local, Timelike, Utc};
@@ -8,6 +26,7 @@ use crate::db::idle_segments_repo::{self, IdleSegment, SegmentType};
 use crate::ui::{BG, GRAY_TEXT, GREEN_STATUS, NAVY, ORANGE, TIMELINE_ACTIVE, TIMELINE_IDLE, TIMELINE_LOCKED, Route};
 use crate::util;
 
+/// 메인 상태 화면 렌더링. 매 프레임 호출.
 pub fn show(ctx: &egui::Context, state: &Arc<AppState>, route: &mut Route) {
     let snapshot = state.snapshot_status();
     let session = state.session.read().unwrap().clone();
@@ -122,14 +141,16 @@ pub fn show(ctx: &egui::Context, state: &Arc<AppState>, route: &mut Route) {
                                 .inner_margin(egui::Margin::symmetric(14.0, 12.0))
                                 .show(ui, |ui| {
                                     ui.set_min_width(ui.available_width());
-                                    ui.label(egui::RichText::new("출근").size(12.0).color(GRAY_TEXT));
-                                    ui.add_space(2.0);
-                                    ui.label(
-                                        egui::RichText::new(attendance_label)
-                                            .size(17.0)
-                                            .color(NAVY)
-                                            .strong(),
-                                    );
+                                    ui.vertical_centered(|ui| {
+                                        ui.label(egui::RichText::new("출근").size(12.0).color(GRAY_TEXT));
+                                        ui.add_space(2.0);
+                                        ui.label(
+                                            egui::RichText::new(attendance_label)
+                                                .size(17.0)
+                                                .color(NAVY)
+                                                .strong(),
+                                        );
+                                    });
                                 });
                         });
 
@@ -390,6 +411,7 @@ pub fn show(ctx: &egui::Context, state: &Arc<AppState>, route: &mut Route) {
 
 // ── 헬퍼 위젯 ─────────────────────────────────────────────────
 
+/// 통계 카드 한 개 (제목/값/서브). 텍스트 모두 가로 중앙 정렬.
 fn stat_card(ui: &mut egui::Ui, title: &str, value: &str, subtitle: &str) {
     egui::Frame::none()
         .fill(egui::Color32::WHITE)
@@ -397,14 +419,17 @@ fn stat_card(ui: &mut egui::Ui, title: &str, value: &str, subtitle: &str) {
         .inner_margin(egui::Margin::symmetric(14.0, 12.0))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            ui.label(egui::RichText::new(title).size(12.0).color(GRAY_TEXT));
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new(value).size(22.0).color(NAVY).strong());
-            ui.add_space(2.0);
-            ui.label(egui::RichText::new(subtitle).size(11.0).color(GRAY_TEXT));
+            ui.vertical_centered(|ui| {
+                ui.label(egui::RichText::new(title).size(12.0).color(GRAY_TEXT));
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(value).size(22.0).color(NAVY).strong());
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new(subtitle).size(11.0).color(GRAY_TEXT));
+            });
         });
 }
 
+/// 타임라인 범례용 작은 색상 블럭 + 텍스트.
 fn legend_dot(ui: &mut egui::Ui, color: egui::Color32, label: &str) {
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
@@ -413,10 +438,22 @@ fn legend_dot(ui: &mut egui::Ui, color: egui::Color32, label: &str) {
     });
 }
 
+/// 09:00 ~ 현재까지 타임라인 막대 (초록=사용 / 주황=미사용 / 회색=잠금).
+/// 세그먼트가 양 끝에 닿으면 해당 모서리만 둥글게 마무리.
+/// 하단에 2시간 단위 hour 레이블 + 우측 끝 "현재 HH:MM".
 fn draw_timeline(ui: &mut egui::Ui, segments: &[IdleSegment]) {
     let bar_h = 26.0;
-    let (bar_rect, _) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), bar_h), egui::Sense::hover());
+    let label_pad = 8.0;
+    let label_h = 14.0;
+    let total_h = bar_h + label_pad + label_h;
+    let bar_radius = 6.0;
+
+    // 바 + 레이블 영역을 한꺼번에 할당해서 카드(흰 박스) 내부에서 항상 잘리지 않게.
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), total_h),
+        egui::Sense::hover(),
+    );
+    let bar_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), bar_h));
 
     let now_local = chrono::Local::now();
     let today_start_h = 9u32;
@@ -431,10 +468,13 @@ fn draw_timeline(ui: &mut egui::Ui, segments: &[IdleSegment]) {
 
     let now_utc = Utc::now();
     let total_secs = (now_utc - start_utc).num_seconds().max(1) as f64;
+    let bar_rounding = egui::Rounding::same(bar_radius);
 
-    let painter = ui.painter_at(bar_rect);
-    painter.rect_filled(bar_rect, egui::Rounding::same(4.0), TIMELINE_ACTIVE);
+    let painter = ui.painter();
+    // 바 배경 (활성 = 초록, 양쪽 모두 둥글게).
+    painter.rect_filled(bar_rect, bar_rounding, TIMELINE_ACTIVE);
 
+    // 자리비움/잠금 구간 오버레이 — 바 끝에 닿으면 그쪽 모서리만 맞춰 둥글게.
     for seg in segments {
         if seg.start_time > now_utc {
             continue;
@@ -444,53 +484,76 @@ fn draw_timeline(ui: &mut egui::Ui, segments: &[IdleSegment]) {
             .end_time
             .map(|e| (e - start_utc).num_seconds().max(0) as f64)
             .unwrap_or(total_secs);
-        let x0 = bar_rect.left() + (seg_start / total_secs) as f32 * bar_rect.width();
-        let x1 = bar_rect.left() + (seg_end / total_secs) as f32 * bar_rect.width();
+        let x0 = (bar_rect.left() + (seg_start / total_secs) as f32 * bar_rect.width())
+            .max(bar_rect.left());
+        let x1 = (bar_rect.left() + (seg_end / total_secs) as f32 * bar_rect.width())
+            .min(bar_rect.right());
+        if x1 <= x0 {
+            continue;
+        }
         let sr = egui::Rect::from_min_max(
             egui::pos2(x0, bar_rect.top()),
-            egui::pos2(x1.min(bar_rect.right()), bar_rect.bottom()),
+            egui::pos2(x1, bar_rect.bottom()),
         );
+        let touches_left = (x0 - bar_rect.left()).abs() < 0.5;
+        let touches_right = (x1 - bar_rect.right()).abs() < 0.5;
+        let mut r = egui::Rounding::ZERO;
+        if touches_left {
+            r.nw = bar_radius;
+            r.sw = bar_radius;
+        }
+        if touches_right {
+            r.ne = bar_radius;
+            r.se = bar_radius;
+        }
         let color = match seg.segment_type {
             SegmentType::PcLocked => TIMELINE_LOCKED,
             _ => TIMELINE_IDLE,
         };
-        painter.rect_filled(sr, egui::Rounding::ZERO, color);
+        painter.rect_filled(sr, r, color);
     }
 
-    // 시간 레이블
-    ui.add_space(4.0);
+    // 시간 레이블 — 박스 안에 위치, 우측에는 "현재 HH:MM".
+    let label_y = bar_rect.bottom() + label_pad;
     let now_h = now_local.hour();
-    let labels: Vec<u32> = (today_start_h..=now_h).step_by(2).collect();
-    if !labels.is_empty() {
-        let lw = ui.available_width();
-        let step = if labels.len() > 1 {
-            lw / (labels.len() - 1) as f32
-        } else {
-            0.0
-        };
-        for (i, h) in labels.iter().enumerate() {
-            let x = bar_rect.left() + i as f32 * step;
-            let y = bar_rect.bottom() + 6.0;
-            ui.painter().text(
-                egui::pos2(x, y),
-                egui::Align2::LEFT_TOP,
+    let now_m = now_local.minute();
+    let now_decimal = now_h as f32 + now_m as f32 / 60.0;
+    let span = (now_decimal - today_start_h as f32).max(0.5);
+    let label_font = egui::FontId::proportional(10.0);
+
+    // 09:00 부터 2시간 단위로 — 단, "현재" 라벨과 겹치지 않게 1시간 이상 차이날 때만.
+    let mut h = today_start_h;
+    while h < now_h {
+        if (now_decimal - h as f32) >= 1.0 {
+            let t = ((h - today_start_h) as f32 / span).clamp(0.0, 1.0);
+            let x = bar_rect.left() + t * bar_rect.width();
+            let align = if h == today_start_h {
+                egui::Align2::LEFT_TOP
+            } else {
+                egui::Align2::CENTER_TOP
+            };
+            painter.text(
+                egui::pos2(x, label_y),
+                align,
                 format!("{h:02}:00"),
-                egui::FontId::proportional(10.0),
+                label_font.clone(),
                 GRAY_TEXT,
             );
         }
-        // "현재" 레이블
-        ui.painter().text(
-            egui::pos2(bar_rect.right(), bar_rect.bottom() + 6.0),
-            egui::Align2::RIGHT_TOP,
-            "현재",
-            egui::FontId::proportional(10.0),
-            GRAY_TEXT,
-        );
+        h += 2;
     }
-    ui.add_space(16.0);
+
+    // 우측 끝 — "현재 HH:MM"
+    painter.text(
+        egui::pos2(bar_rect.right(), label_y),
+        egui::Align2::RIGHT_TOP,
+        format!("현재 {:02}:{:02}", now_h, now_m),
+        label_font,
+        GRAY_TEXT,
+    );
 }
 
+/// 통계 카드의 누적 시간 표기 (예: 4h 12m / 25m).
 fn format_active(seconds: i64) -> String {
     let s = seconds.max(0);
     let h = s / 3600;

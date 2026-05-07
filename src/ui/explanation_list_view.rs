@@ -1,4 +1,19 @@
-//! 근무시간 소명 목록 화면.
+//! ============================================================================
+//! ui::explanation_list_view — 근무시간 소명 대상 목록 화면.
+//! ============================================================================
+//!
+//! 본 화면 진입 경로:
+//!   - 상단 탭 "근무시간 소명"
+//!   - 상태 화면의 "오늘 기록 보기" / 소명 N건 진입 버튼
+//!   - 토스트 (현재는 클릭 콜백 미구현 — 사용자가 직접 진입)
+//!
+//! 표시: 날짜 / 시작 / 종료 / 간격 / 적용 기준 / 종류 / 상태 / 소명 마감 + 소명하기 버튼.
+//! 첫 진입 시 30분 안에 한 번만 토스트로 알림.
+//!
+//! TODO(2차): 서버측 segment (`api::list_explanations`) 와 로컬 segment 병합 표시.
+//! 현재는 로컬 only — 다른 PC 에서 만든 segment 가 안 보임.
+//! TODO(2차): 빈 상태에서 "테스트 자리비움 1건 생성" 버튼은 Mock 모드 디버깅 용.
+//! 실서버 연결 시 자동 숨김 (이미 `if state.config.api.mock_mode` 조건 들어가 있음).
 
 use std::sync::Arc;
 
@@ -10,6 +25,7 @@ use crate::db::idle_segments_repo::{self, NewSegment, SegmentType};
 use crate::ui::Route;
 use crate::util;
 
+/// 화면 진입점 — 헤더 + 콘텐츠.
 pub fn show(
     ctx: &egui::Context,
     state: &Arc<AppState>,
@@ -79,23 +95,13 @@ fn content(
         return;
     }
 
-    // 가장 최근 한 건에 대해 한번만 토스트 알림.
-    let latest = &segments[0];
-    let now = Utc::now();
-    let should_toast = last_toast_at
-        .map(|t| (now - t).num_minutes() >= 30)
-        .unwrap_or(true);
-    if should_toast {
-        if let Some(end) = latest.end_time {
-            let mins = (end - latest.start_time).num_minutes().max(0);
-            let _ = crate::notify::show_explanation_request(
-                &util::format_local_time(&latest.start_time),
-                &util::format_local_time(&end),
-                mins,
-            );
-        }
-        *last_toast_at = Some(now);
-    }
+    // 토스트는 여기서 띄우지 않는다.
+    // - 사용자가 이미 목록 화면을 보고 있으므로 알림이 중복.
+    // - macOS 의 unbundled 빌드에서 notify-rust 가 LaunchServices 다이얼로그를
+    //   띄우는 부작용("Choose Application — Where is …?")이 있어 화면 전환을 가린다.
+    // 토스트가 진짜 의미 있는 순간은 백그라운드에서 새 자리비움이 막 발생했을 때 —
+    // 그 시점에는 `monitor::idle_detector::open_segment` 가 별도 thread 에서 호출.
+    let _ = last_toast_at; // 변수 미사용 경고 억제 (시그니처 호환 유지)
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         egui::Grid::new("explanation_grid").num_columns(9).striped(true).show(ui, |ui| {
@@ -138,6 +144,8 @@ fn content(
 }
 
 /// Mock 모드 전용 — 화면 검증을 위해 5분 짜리 자리비움 구간 1건을 즉시 생성.
+/// 실서버 모드에서는 이 함수가 호출되지 않음 (UI 가드).
+/// TODO(2차 정리): 정식 배포 전 본 함수와 호출 UI 제거.
 fn seed_test_segment(state: &Arc<AppState>, session: &crate::auth::Session) -> anyhow::Result<()> {
     let now = Utc::now();
     let start = now - Duration::minutes(5);

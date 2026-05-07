@@ -1,7 +1,20 @@
-//! 핀플 PC 앱 1차 MVP 진입점.
+//! ============================================================================
+//! main.rs — 핀플 PC 앱 1차 MVP 진입점.
+//! ============================================================================
 //!
-//! - 출근/퇴근은 절대 처리하지 않음 (스마트폰 앱 전용).
-//! - PC 사용/미사용 감지 + 근무시간 소명만 담당.
+//! 부팅 순서:
+//!   1) 설정 로드 (`config/default.toml` + 사용자 override + env)
+//!   2) tokio 멀티스레드 런타임 생성 (UI 와 별도)
+//!   3) SQLite 열고 마이그레이션
+//!   4) device_id / device_name 영속화 (최초 1회 UUID)
+//!   5) `AppState` 공유 상태 인스턴스 생성 (Arc)
+//!   6) 백그라운드 task 스폰 (감지/heartbeat/배치/정책/업데이트/출근)
+//!   7) eframe 메인 루프 점유 — 종료 시 함수 반환
+//!
+//! ── 설계 원칙 ───────────────────────────────────────────────────────────
+//! - 출근/퇴근은 절대 PC 앱이 처리하지 않음. 스마트폰 앱 전용.
+//! - PC 앱은 사용/미사용 감지 + 근무시간 소명만 담당.
+//! - 비밀번호는 메모리에서만 사용 후 즉시 drop. 토큰만 OS Credential Store 저장.
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
@@ -23,6 +36,14 @@ use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
+/// tracing 로거를 한 번 초기화한다.
+///
+/// - 환경변수 `RUST_LOG` 가 있으면 우선.
+/// - 없으면 `pinple_pc_agent={level},warn` (자기 크레이트만 상세, 외부 의존성은 warn 이상).
+///
+/// TODO(2차): 파일 회전 로그 추가 (현재 stdout 만). `tracing-appender` 의
+/// `rolling::daily` 를 사용해 `data_dir/logs/agent-YYYY-MM-DD.log` 형태로 저장하면
+/// Windows 에서도 디버깅 편의가 좋아진다.
 fn init_logging(level: &str) {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(format!("pinple_pc_agent={level},warn")));
@@ -67,6 +88,9 @@ fn main() -> anyhow::Result<()> {
     sync::spawn_all(state.clone());
 
     // 7. UI 메인 루프 (egui — 자체 이벤트 루프 점유)
+    // TODO(2차): 트레이 아이콘 통합. 현재 `Cargo.toml` 의 `tray-icon` 의존성은 주석.
+    // egui/winit 이벤트 루프 안에서 tray 메시지를 받으려면 별도 thread + IPC 채널 필요.
+    // TODO(2차): 닫기(X) 클릭 시 `hide_to_tray_on_close = true` 면 종료 대신 트레이로 최소화.
     let ui_state = state.clone();
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

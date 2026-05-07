@@ -1,9 +1,32 @@
+// ============================================================================
+// ui — egui 기반 메인 UI 라우터.
+// ============================================================================
+//
+// `Route` enum 으로 7개 화면 분기:
+//   - Login            : 로그인 화면 (오렌지 카드 디자인)
+//   - Status           : 메인 상태 (출근/통계/타임라인/소명 진입)
+//   - ExplanationList  : 자리비움 목록 + "소명하기" 버튼
+//   - ExplanationInput : 소명 사유/내용 입력
+//   - Settings         : 환경설정 (3 탭: 일반/감지/계정)
+//   - UpdateNotice     : 업데이트 안내
+//   - Disabled         : 요금제 미포함 안내
+//
+// 공통 컴포넌트:
+//   - 색상 팔레트 (ORANGE/NAVY/BG/GRAY_TEXT/GREEN_STATUS/TIMELINE_*)
+//   - `orange_header()` 서브페이지 공용 헤더 패널
+//   - 한글 폰트 자동 등록 (Windows 맑은고딕 / macOS AppleSDGothicNeo / Linux NotoSansCJK)
+//
+// TODO(2차): UI repaint 가 1초 주기 폴링. tokio watch 채널을 두고 idle/heartbeat
+// 이벤트 시점에만 `ctx.request_repaint()` 부르는 게 더 효율적.
+// TODO(2차): 다크 모드 지원 — 현재 light visuals 고정.
+
 mod disabled_view;
 mod explanation_input_view;
 mod explanation_list_view;
 mod login_view;
 pub mod settings_view;
 mod status_view;
+mod tray;
 mod update_view;
 
 use std::sync::Arc;
@@ -43,6 +66,11 @@ pub struct PinpleApp {
     last_toast_at: Option<chrono::DateTime<chrono::Utc>>,
     settings_tab: settings_view::SettingsTab,
     settings_ui: settings_view::SettingsUi,
+    /// 트레이 아이콘 핸들. 드롭되면 트레이에서 사라지므로 보관.
+    /// 초기화 실패 시 `None` — 그래도 앱은 정상 동작 (창 닫으면 그냥 종료).
+    tray: Option<tray::TrayHandle>,
+    /// 트레이 메뉴 "종료" 또는 명시적 종료 시 true. 일반 X 버튼 클릭은 false 유지.
+    really_quit: bool,
 }
 
 impl PinpleApp {
@@ -56,6 +84,18 @@ impl PinpleApp {
             kick_auto_login(state.clone());
             Route::Login
         };
+
+        let tray = match tray::TrayHandle::new() {
+            Ok(t) => {
+                info!("트레이 아이콘 초기화 완료 — 창 닫아도 백그라운드에서 계속 동작합니다");
+                Some(t)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "트레이 아이콘 초기화 실패 — 창 닫으면 앱이 종료됩니다");
+                None
+            }
+        };
+
         Self {
             state,
             route: initial_route,
@@ -64,12 +104,52 @@ impl PinpleApp {
             last_toast_at: None,
             settings_tab: settings_view::SettingsTab::General,
             settings_ui: settings_view::SettingsUi::default(),
+            tray,
+            really_quit: false,
         }
     }
 }
 
 impl App for PinpleApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        // ── 트레이 메뉴 이벤트 처리 ───────────────────────────────────────
+        if let Some(tray) = &self.tray {
+            if let Some(cmd) = tray.poll() {
+                use tray::TrayCommand::*;
+                match cmd {
+                    Show => {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
+                    OpenExplanation => {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        if self.state.is_logged_in() {
+                            self.route = Route::ExplanationList;
+                        }
+                    }
+                    Quit => {
+                        self.really_quit = true;
+                        // APP_STOPPED 이벤트 enqueue (다음 배치에서 전송).
+                        let _ = crate::monitor::lifecycle::record_stopped(&self.state);
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
+            }
+        }
+
+        // ── X(닫기) 클릭 가로채기 — 종료 대신 창 숨기기 ───────────────────
+        // really_quit = true 인 경우는 트레이 "종료" 가 이미 처리했으므로 그대로 닫힘.
+        // 트레이가 없으면 가로채지 않음 (사용자가 창 다시 띄울 방법이 없으므로).
+        if self.tray.is_some()
+            && !self.really_quit
+            && ctx.input(|i| i.viewport().close_requested())
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            tracing::info!("창을 트레이로 숨김 — 백그라운드에서 idle 감지가 계속됩니다");
+        }
+
         if matches!(self.route, Route::Login) && self.state.is_logged_in() {
             self.route = if self.state.can_track_time() { Route::Status } else { Route::Disabled };
         }
@@ -109,8 +189,8 @@ impl App for PinpleApp {
     }
 }
 
-/// 서브페이지 공용 오렌지 헤더 패널.
-/// back_route 클릭 시 route 를 변경하고 true 를 반환.
+/// 서브페이지 공용 오렌지 헤더 패널 (뒤로가기 + 페이지 제목).
+/// back_route 클릭 시 route 를 그 값으로 변경.
 pub fn orange_header(
     ctx: &egui::Context,
     title: &str,
@@ -165,6 +245,7 @@ pub fn orange_header(
         });
 }
 
+/// 공통 비주얼 — 라이트 테마 + 둥근 모서리 + 패딩.
 fn setup_visuals(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::light();
     visuals.panel_fill = BG;
@@ -180,6 +261,7 @@ fn setup_visuals(ctx: &egui::Context) {
     });
 }
 
+/// 앱 시작 직후 한 번 호출 — 백그라운드에서 자동로그인 시도.
 fn kick_auto_login(state: Arc<AppState>) {
     let runtime = state.runtime.clone();
     runtime.spawn(async move {
@@ -191,6 +273,8 @@ fn kick_auto_login(state: Arc<AppState>) {
     });
 }
 
+/// OS 별 한글 폰트 파일을 찾아 egui font 로 등록.
+/// 파일을 못 찾으면 egui 기본 폰트만 — 한글이 □ 로 깨질 수 있음.
 fn install_korean_font(ctx: &egui::Context) {
     let candidates: &[&str] = if cfg!(windows) {
         &["C:/Windows/Fonts/malgun.ttf", "C:/Windows/Fonts/malgunbd.ttf"]

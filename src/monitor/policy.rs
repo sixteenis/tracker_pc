@@ -1,9 +1,16 @@
-//! 자리비움 기준 시간 적용 우선순위 해석 (기획서 §13).
+//! ============================================================================
+//! monitor::policy — 자리비움 기준 시간 우선순위 해석 (기획서 §13).
+//! ============================================================================
 //!
-//! 1. employee → 2. team → 3. company → 4. default
+//!   1. employee → 2. team → 3. company → 4. default
 //!
-//! 서버는 보통 `effective_idle_threshold_seconds` 와 `policy_scope` 를 직접
-//! 내려주지만, 만일 그 두 값이 없거나 신뢰할 수 없다면 아래 함수로 재계산할 수 있다.
+//! 서버는 보통 `effective_idle_threshold_seconds` + `policy_scope` 두 값을 직접
+//! 계산해서 내려주지만, 만일 그 두 값이 없거나 신뢰할 수 없다면 아래 함수로
+//! 클라이언트가 재계산한다 (방어 코드 / 테스트).
+//!
+//! TODO(2차): 정책 변경 감지 시 진행 중인 자리비움 segment 의 처리 정책 합의.
+//! 현재는 새로 생성되는 segment 만 새 기준 적용 — 진행 중 segment 는 시작 시점
+//! 기준 그대로. 관리자/근로자 입장에서 어떤 동작이 자연스러운지 결정 필요.
 
 use crate::api::types::PolicySnapshot;
 
@@ -26,6 +33,8 @@ impl Scope {
     }
 }
 
+/// 정책 스냅샷에서 적용할 임계값 (초) + scope 라벨 반환.
+/// 서버가 내려준 `effective_idle_threshold_seconds` 가 정확하지 않을 때만 사용.
 pub fn resolve(policy: &PolicySnapshot, default_seconds: u64) -> (u64, Scope) {
     if let Some(v) = policy.employee_idle_threshold_seconds {
         return (v, Scope::Employee);

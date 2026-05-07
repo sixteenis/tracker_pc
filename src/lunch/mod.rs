@@ -1,8 +1,20 @@
-//! 점심시간 정책 처리 (기획서 §16).
+//! ============================================================================
+//! lunch — 점심시간 정책 분류 (기획서 §16).
+//! ============================================================================
 //!
-//! - 점심 가능 시간대 안에서 점심 인정시간 (분) 이하 PC 미사용 → 점심 후보
-//! - 점심 인정시간 초과 → 초과분만 소명 대상
-//! - 점심 가능 시간대 밖 → 일반 자리비움 소명
+//! 자리비움 segment 와 회사 점심 윈도우(`lunch_start_time` ~ `lunch_end_time`,
+//! `lunch_allowed_minutes`) 를 비교해서 3종류로 분류:
+//!
+//!   - LunchCandidate  : 윈도우 안 + 인정시간 이하 → 휴게로 처리, 소명 불필요
+//!   - LunchExceeded   : 윈도우 안 + 인정시간 초과 → 초과분만 소명 대상
+//!   - Outside         : 윈도우 밖 → 일반 자리비움 소명
+//!
+//! TODO(미통합): `idle_detector` 가 현재 모든 segment 를 그대로 PC_IDLE 로 만든다.
+//! 본 모듈의 `classify` 결과를 segment 의 `segment_type` 에 반영해서:
+//!   - LunchCandidate  → 자동 LUNCH_BREAK 소명 채우거나 explanation_required = false
+//!   - LunchExceeded   → 두 segment 로 분리 (점심 60분 + 초과분 N분)
+//!   - Outside         → 현재처럼 PC_IDLE
+//! 처리 정책을 백엔드/관리자와 합의 후 통합.
 
 use chrono::{DateTime, Datelike, Duration, Local, NaiveTime, TimeZone, Utc};
 
@@ -18,6 +30,8 @@ pub enum LunchClassification {
     Outside,
 }
 
+/// 자리비움 [start, end] 구간을 점심 윈도우와 비교해서 분류.
+/// 윈도우는 segment 의 시작 시점이 속한 로컬 날짜 기준으로 계산.
 pub fn classify(
     start: DateTime<Utc>,
     end: DateTime<Utc>,
@@ -66,10 +80,12 @@ pub fn classify(
     }
 }
 
+/// "HH:MM" → `NaiveTime`. 잘못된 형식이면 `None`.
 fn parse_hhmm(s: &str) -> Option<NaiveTime> {
     NaiveTime::parse_from_str(s, "%H:%M").ok()
 }
 
+/// `NaiveTime` → 자정부터의 초.
 fn time_seconds(t: NaiveTime) -> i64 {
     use chrono::Timelike;
     (t.hour() as i64) * 3600 + (t.minute() as i64) * 60 + (t.second() as i64)

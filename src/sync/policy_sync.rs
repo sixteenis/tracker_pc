@@ -1,5 +1,15 @@
-//! 30분 주기 정책 조회 — 자리비움 기준 시간이 관리자에 의해 변경되었을 수 있으므로
-//! 주기적으로 다시 받는다 (기획서 §22).
+//! ============================================================================
+//! sync::policy_sync — 30분 주기 정책 재조회 (기획서 §22).
+//! ============================================================================
+//!
+//! 관리자가 회사/팀/근로자 자리비움 기준을 변경했을 수 있으므로 주기적으로
+//! `GET /api/pc-agent/policy` 호출. 응답의 `policy_version` 이 바뀌면
+//! AppState 의 정책 + 라이브 상태(threshold/scope) 즉시 갱신.
+//!
+//! TODO(2차): heartbeat 응답에 policy_version 가 포함돼 변경 감지를 더 빨리할 수 있음.
+//! 현재는 최대 30분 지연 발생 가능.
+//! TODO(2차): 정책 변경 시 사용자에게 토스트 안내 ("자리비움 기준이 10분 → 15분으로
+//! 변경되었습니다") — 변경 사실을 모르면 사용자가 혼란스러울 수 있음.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,6 +19,7 @@ use tracing::{info, warn};
 
 use crate::app::AppState;
 
+/// 메인 정책 동기화 루프.
 pub async fn run(state: Arc<AppState>) {
     let interval = Duration::from_secs(
         state.config.intervals.policy_check_interval_seconds.max(60),

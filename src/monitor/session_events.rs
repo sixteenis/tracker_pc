@@ -1,16 +1,22 @@
-//! PC 잠금/잠금해제 감지 (기획서 §10).
+//! ============================================================================
+//! monitor::session_events — PC 잠금/잠금해제 감지 (기획서 §10).
+//! ============================================================================
 //!
-//! 1차 MVP 에서는 별도 윈도우 메시지 루프를 만들지 않고, 폴링 기반 근사로
-//! 처리한다. Windows 의 `WTSGetActiveConsoleSessionId` + 입력 소켓 핸들 검사
-//! 를 사용할 수도 있으나, 외부 의존성을 늘리지 않기 위해 다음 휴리스틱을 사용:
+//! ⚠️ 1차 MVP STUB ⚠️
 //!
-//!   - `idle_detector` 가 보고하는 idle_seconds 가 매우 빨리 0 으로 떨어지지
-//!     않는데도 사용자가 입력을 했다는 다른 신호가 없으면 그대로 PC_IDLE 로 처리.
-//!   - 본격적인 잠금/잠금해제 이벤트는 2차에서 `WTSRegisterSessionNotification`
-//!     + 메시지 윈도우로 정확히 잡는다.
+//! 본격적인 잠금/해제 이벤트 캡처는 미구현. 현재 `run()` 은 5분 watchdog 만 돌고,
+//! `record_locked()` / `record_unlocked()` 외부 호출 hook 만 노출.
 //!
-//! 이 stub 은 향후 hook 지점을 명시하기 위해 남겨둔다 — 호출자는 외부에서
-//! `record_locked()` / `record_unlocked()` 를 호출하면 된다.
+//! TODO(2차 핵심): Windows `WTSRegisterSessionNotification` + hidden message window
+//! 로 `WM_WTSSESSION_CHANGE` 를 받아 `WTS_SESSION_LOCK` / `WTS_SESSION_UNLOCK` 을
+//! 감지. 메시지 펌프는 별도 thread + `winapi::PostThreadMessage` 로 종료 가능하게.
+//!
+//! TODO(2차): macOS `NSDistributedNotificationCenter` 의 "com.apple.screenIsLocked"
+//! / "com.apple.screenIsUnlocked" notification 구독.
+//!
+//! TODO(idle_detector 통합): 잠금 상태에서 입력은 발생할 수 없으므로 PC_LOCKED
+//! segment 만 생성해야 하는데, 현재는 `idle_detector` 가 PC_IDLE 로 처리할 수 있음.
+//! 두 모듈 통합 (또는 잠금 우선 분기) 필요.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,8 +26,8 @@ use chrono::Utc;
 use crate::app::{AppState, PcStatus};
 use crate::monitor::idle_detector::enqueue_event;
 
+/// stub — 5분마다 살아있음 로깅. TODO(2차) 에서 실제 잠금 감지로 교체.
 pub async fn run(state: Arc<AppState>) {
-    // 단순 watchdog — 5분마다 살아있음을 로깅.
     let mut tick = tokio::time::interval(Duration::from_secs(300));
     tick.tick().await;
     loop {
@@ -31,6 +37,8 @@ pub async fn run(state: Arc<AppState>) {
     }
 }
 
+/// 잠금 감지 hook. 2차에서 메시지 윈도우로부터 호출될 예정.
+/// 현재는 외부에서 직접 호출할 수 있게 노출만 해둠.
 #[allow(dead_code)]
 pub fn record_locked(state: &Arc<AppState>) {
     if let Ok(mut s) = state.status.write() {
@@ -44,6 +52,7 @@ pub fn record_locked(state: &Arc<AppState>) {
     );
 }
 
+/// 잠금 해제 감지 hook. 자세한 내용은 `record_locked` 참고.
 #[allow(dead_code)]
 pub fn record_unlocked(state: &Arc<AppState>) {
     if let Ok(mut s) = state.status.write() {

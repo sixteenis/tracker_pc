@@ -1,3 +1,13 @@
+// ============================================================================
+// ui::login_view — 로그인 화면 (오렌지 원형 장식 + 흰 카드).
+// ============================================================================
+//
+// 입력: 아이디 / 비밀번호 / 자동로그인 체크박스. 비밀번호는 메모리에서만 사용.
+// 로그인 비동기 처리 중에는 버튼이 "로그인 중…" 으로 비활성화.
+//
+// TODO(2차): "비밀번호 찾기" 링크가 표시만 되고 동작 안 함. 핀플 웹사이트로 외부
+// 브라우저 열기 (`webbrowser::open`) 또는 인앱 비밀번호 재설정 화면 추가.
+
 use std::sync::{Arc, Mutex};
 
 use eframe::egui;
@@ -5,6 +15,7 @@ use eframe::egui;
 use crate::app::AppState;
 use crate::ui::{GRAY_TEXT, NAVY, ORANGE, Route};
 
+/// 로그인 입력 상태. `PinpleApp` 에 한 번 보관되며 실패 시 에러 메시지 유지.
 #[derive(Default)]
 pub struct LoginForm {
     pub login_id: String,
@@ -14,6 +25,7 @@ pub struct LoginForm {
     pub busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// 로그인 화면 렌더링. 매 프레임 호출됨.
 pub fn ui(ui: &mut egui::Ui, state: &Arc<AppState>, form: &mut LoginForm, route: &mut Route) {
     let rect = ui.max_rect();
 
@@ -189,6 +201,9 @@ pub fn ui(ui: &mut egui::Ui, state: &Arc<AppState>, form: &mut LoginForm, route:
     }
 }
 
+/// 로그인 버튼 클릭 시 호출. 비밀번호를 form 에서 take() 해서 비동기 task 로 전달
+/// — 함수 종료와 함께 form.password 는 빈 문자열이 되며, 비동기 task 종료 시
+/// 그 안의 pw 도 drop. 어디에도 영구 저장되지 않는다.
 fn start_login(state: &Arc<AppState>, form: &mut LoginForm) {
     let state = state.clone();
     let id = form.login_id.clone();

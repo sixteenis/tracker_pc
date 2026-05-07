@@ -1,11 +1,24 @@
-//! Mock API — 실제 핀플 서버가 아직 없을 때 개발용으로 사용.
+//! ============================================================================
+//! api::mock — 개발용 Mock API. `mock_mode = true` 일 때 주입.
+//! ============================================================================
 //!
 //! 모든 응답은 "성공" 시나리오를 가정한다 (기획서 마지막 단락 참고).
 //! - 로그인 성공
 //! - 요금제 활성 (`can_track_time = true`)
-//! - 정책 조회 성공 (effective_idle_threshold_seconds = 600, scope = COMPANY)
-//! - 이벤트 전송 성공
+//! - 정책 조회 성공 (effective_idle_threshold_seconds = 5초, scope = COMPANY  ← 테스트용)
+//! - 이벤트 전송 성공 (모든 event_id accept)
 //! - 소명 제출 성공
+//! - 출근 상태 = WORKING
+//! - 업데이트 = 최신 (force_update = false)
+//!
+//! ── 테스트 시나리오 시뮬레이션 방법 ─────────────────────────────────────
+//! - `force_update = true` 시뮬: `update_check` 함수에서 응답 임시 수정
+//! - 요금제 미포함 시뮬: `fake_policy().can_track_time = false`
+//! - 다른 PC 강제 로그아웃 시뮬: `send_heartbeat` 응답에 `force_logout = true`
+//!
+//! TODO(테스트): 위 분기들을 한 번에 토글할 수 있는 환경변수 추가
+//! (예: `PINPLE_MOCK_FORCE_UPDATE=1`).
+//! TODO(테스트): `fixtures/` 디렉토리에 시나리오별 JSON 응답 두고 환경변수로 선택.
 
 use std::sync::Mutex;
 
@@ -26,6 +39,7 @@ impl MockClient {
         Self { submitted: Mutex::new(Vec::new()) }
     }
 
+    /// access_token / refresh_token / 만료 초.
     fn fake_session() -> (String, String, i64) {
         (
             format!("mock-access-{}", Uuid::new_v4()),
@@ -34,6 +48,8 @@ impl MockClient {
         )
     }
 
+    /// 회사 정책 더미. 테스트 편의를 위해 임계값이 매우 낮음(5초).
+    /// 운영 시연 전 600(10분) 등 현실 값으로 복원할 것.
     fn fake_policy() -> PolicySnapshot {
         // ※ 테스트용: idle 임계값을 5초로 내려서 즉시 자리비움 검증이 가능하도록.
         //   운영 또는 시연 시에는 600(10분) 이상으로 복원할 것.

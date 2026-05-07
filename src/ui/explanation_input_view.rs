@@ -1,4 +1,16 @@
-//! 근무시간 소명 입력 화면.
+//! ============================================================================
+//! ui::explanation_input_view — 자리비움 한 건에 대한 소명 입력 화면.
+//! ============================================================================
+//!
+//! 진입: 목록 화면 각 행의 "소명하기" 버튼 → `Route::ExplanationInput { segment_id }`.
+//! 표시: segment 메타 (날짜/시작/종료/간격/적용 기준)
+//! 입력: 사유 콤보 (12종) + 자유 텍스트
+//! 제출: 로컬 DB insert → segment status SUBMITTED 마크 → 비동기 서버 POST.
+//!
+//! TODO(미구현): 서버 전송 실패 시 자동 재시도 워커 없음. 현재는 입력 화면에서
+//! 1회만 전송 시도. `db::explanations_repo` 헤더의 TODO 참조.
+//! TODO(2차): 임시 저장 — 사용자가 입력 도중 화면 떠나면 텍스트 유지.
+//! TODO(2차): 사유에 따라 추가 필드 (예: BUSINESS_TRIP 이면 출장지) 동적 표시.
 
 use std::sync::{Arc, Mutex};
 
@@ -27,6 +39,7 @@ impl Default for ExplanationForm {
     }
 }
 
+/// 화면 진입점 — 오렌지 헤더 + 콘텐츠.
 pub fn show(
     ctx: &egui::Context,
     state: &Arc<AppState>,
@@ -135,6 +148,8 @@ fn content(
     }
 }
 
+/// 제출 버튼 클릭. 로컬 DB 저장 + segment SUBMITTED + 비동기 서버 전송.
+/// 서버 실패해도 로컬에는 남아 다음에 다시 보낼 수 있음 (재시도는 미구현).
 fn submit(state: &Arc<AppState>, seg: &idle_segments_repo::IdleSegment, form: &mut ExplanationForm) {
     let new = NewExplanation {
         segment_id: seg.segment_id.clone(),

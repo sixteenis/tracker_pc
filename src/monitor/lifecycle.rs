@@ -1,10 +1,16 @@
-//! 앱 시작/종료 이벤트 + 비정상 종료 후 재시작 시 NO_PC_RECORD 구간 생성.
+//! ============================================================================
+//! monitor::lifecycle — 앱 시작/종료 이벤트 + NO_PC_RECORD 자동 생성.
+//! ============================================================================
 //!
-//! 동작:
-//! - `record_started` : APP_STARTED 이벤트 enqueue. 이전 heartbeat 가
-//!   `settings.last_heartbeat_at` 에 저장돼 있고, 그 시간이 정책 임계값보다
-//!   더 과거라면 NO_PC_RECORD segment 를 추가한다.
-//! - `record_stopped` : APP_STOPPED 이벤트 enqueue. (메인 루프 종료 직전 호출)
+//! - `record_started` : `APP_STARTED` 이벤트 enqueue. 이전 heartbeat 가
+//!   `settings.last_heartbeat_at` 에 저장돼 있고 그 시각이 정책 임계값보다 더
+//!   과거라면 `NO_PC_RECORD` segment 를 추가 (앱 비정상 종료 / PC 종료 흔적).
+//! - `record_stopped` : `APP_STOPPED` 이벤트 enqueue. (메인 루프 종료 직전 호출 예정)
+//!
+//! TODO(미연결): `record_stopped` 가 현재 어디에서도 호출되지 않음.
+//! `eframe::App::on_exit` 또는 `Drop for AppState` 에 hook 추가 필요.
+//! TODO(2차): `record_started` 에서 NO_PC_RECORD 만들 때 출근 상태 (`attendance_status`)
+//! 가 WORKING 인 시간대만 잡도록 — 퇴근 후 PC 종료는 정상이므로 segment 불필요.
 
 use std::sync::Arc;
 
@@ -18,6 +24,9 @@ use crate::db::settings_repo;
 
 const KEY_LAST_HEARTBEAT: &str = "last_heartbeat_at";
 
+/// 앱 시작 직후 호출 (`monitor::spawn_all` 에서). APP_STARTED 이벤트 + 필요 시
+/// NO_PC_RECORD segment 생성. 세션이 아직 없으면 NO_PC_RECORD 는 생략됨
+/// (자동로그인 성공 후 상태가 안정되어야 의미 있는 segment 가 됨).
 pub fn record_started(state: &Arc<AppState>) -> Result<()> {
     let now = Utc::now();
     events_repo::enqueue(
@@ -81,6 +90,9 @@ pub fn record_started(state: &Arc<AppState>) -> Result<()> {
     Ok(())
 }
 
+/// 앱 정상 종료 직전 호출 — APP_STOPPED 이벤트 enqueue.
+/// TODO(미연결): 호출 hook 부재. main.rs 의 `eframe::run_native` 가 반환된 직후
+/// `info!("핀플 PC 앱 종료")` 직전에 호출하는 것이 자연스러움.
 #[allow(dead_code)]
 pub fn record_stopped(state: &Arc<AppState>) -> Result<()> {
     events_repo::enqueue(

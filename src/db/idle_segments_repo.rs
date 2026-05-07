@@ -1,4 +1,24 @@
-//! 자리비움/잠금/앱종료/PC종료/기록없음 구간 저장소.
+//! ============================================================================
+//! db::idle_segments_repo — 자리비움 구간 저장소 (`idle_segments` 테이블).
+//! ============================================================================
+//!
+//! `segment_type` 5종:
+//!   - PC_IDLE       : 키보드/마우스 미입력 (idle_detector 가 생성)
+//!   - PC_LOCKED     : Windows 잠금 (1차 MVP 미구현 — session_events stub)
+//!   - PC_APP_CLOSED : 앱 정상 종료 후 재기동 사이 (lifecycle 가 NO_PC_RECORD 와 함께)
+//!   - PC_SHUTDOWN   : PC 종료 감지 (1차 MVP 미구현)
+//!   - NO_PC_RECORD  : 출근 상태인데 heartbeat 끊김 (lifecycle::record_started)
+//!
+//! 각 segment 는 `applied_idle_threshold_seconds` + `policy_scope` 도 함께 저장.
+//! 나중에 관리자가 정책을 바꿔도 과거 segment 가 어떤 기준으로 만들어졌는지 추적 가능.
+//!
+//! TODO(2차): PC_LOCKED 실제 감지 — `WTSRegisterSessionNotification` + 메시지 윈도우.
+//! TODO(2차): PC_SHUTDOWN 감지 — `SetConsoleCtrlHandler` 또는 WM_QUERYENDSESSION
+//!            훅으로 종료 직전 ack 이벤트 enqueue.
+//! TODO(2차): lunch::classify 결과를 segment 에 저장하는 컬럼 추가
+//!            (점심 후보 vs 일반 자리비움). 현재는 모두 동일 처리.
+//! TODO(2차): 서버에서 받아온 segment 와 로컬 segment 병합 로직
+//!            (`api::list_explanations` 응답을 `idle_segments` 에 upsert).
 
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -98,6 +118,8 @@ pub struct NewSegment {
     pub explanation_deadline: Option<DateTime<Utc>>,
 }
 
+/// 새 segment 삽입 + 새 UUID `segment_id` 반환.
+/// `end_time = None` 이면 진행 중 (open) 으로 저장됨 — 나중에 `close()` 호출.
 pub fn insert(db: &Database, seg: &NewSegment) -> Result<String> {
     let segment_id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
@@ -131,6 +153,8 @@ pub fn insert(db: &Database, seg: &NewSegment) -> Result<String> {
     Ok(segment_id)
 }
 
+/// 진행 중(`end_time = NULL`) segment 의 종료 시각 + duration 을 채워 닫는다.
+/// 이미 닫힌 segment 는 무시 (WHERE end_time IS NULL).
 pub fn close(db: &Database, segment_id: &str, end_time: DateTime<Utc>) -> Result<()> {
     let conn = db.lock();
     conn.execute(
@@ -144,6 +168,7 @@ pub fn close(db: &Database, segment_id: &str, end_time: DateTime<Utc>) -> Result
     Ok(())
 }
 
+/// 근로자의 PENDING + EXPIRED 자리비움 구간 (소명 화면용). 최신순, 최대 200건.
 pub fn list_pending_for_employee(db: &Database, employee_id: &str) -> Result<Vec<IdleSegment>> {
     let conn = db.lock();
     let mut stmt = conn.prepare(
@@ -161,6 +186,7 @@ pub fn list_pending_for_employee(db: &Database, employee_id: &str) -> Result<Vec
     Ok(rows)
 }
 
+/// 특정 날짜의 모든 segment (status 무관). 상태 화면 타임라인 그릴 때 사용.
 pub fn list_for_date(db: &Database, employee_id: &str, date: NaiveDate) -> Result<Vec<IdleSegment>> {
     let conn = db.lock();
     let date_str = date.format("%Y-%m-%d").to_string();
@@ -178,6 +204,8 @@ pub fn list_for_date(db: &Database, employee_id: &str, date: NaiveDate) -> Resul
     Ok(rows)
 }
 
+/// 사용자가 소명 제출 완료한 segment 의 상태를 SUBMITTED 로 갱신.
+/// UI 목록에서 자동으로 사라지게 됨.
 pub fn mark_submitted(db: &Database, segment_id: &str) -> Result<()> {
     let conn = db.lock();
     conn.execute(

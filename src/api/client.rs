@@ -1,4 +1,19 @@
-//! 실제 HTTP 호출 구현. `mock_mode = false` 일 때만 사용.
+//! ============================================================================
+//! api::client — 실제 HTTP 호출 구현 (`reqwest` 기반).
+//! ============================================================================
+//!
+//! `mock_mode = false` 일 때만 `AppState::new` 가 인스턴스화한다.
+//! TLS 는 rustls 사용 (Cargo.toml `rustls-tls` 피처).
+//!
+//! ── 에러 처리 ──────────────────────────────────────────────────────────
+//! - 네트워크 에러 → `anyhow!("HTTP {status}: {body}")`
+//! - 401 (refresh) → 특수 메시지 `"REFRESH_EXPIRED"` (호출자가 로그인 화면 분기)
+//! - JSON 파싱 실패 → reqwest 에러 그대로
+//!
+//! TODO(서버 연동): 모든 메서드가 `application/json` 가정 — 서버가 다른 콘텐츠
+//! 타입(예: protobuf, msgpack) 사용 시 `.json()` 대신 직접 파싱 로직.
+//! TODO(2차): 응답 본문이 일정 크기 초과 시 streaming.
+//! TODO(2차): `Sentry` 등 APM 연동.
 
 use std::time::Duration;
 
@@ -16,6 +31,7 @@ pub struct HttpApiClient {
 }
 
 impl HttpApiClient {
+    /// reqwest Client 한 번 생성 (커넥션 풀 공유). 타임아웃은 설정값 그대로.
     pub fn new(base_url: String, timeout_seconds: u64) -> Self {
         let http = Client::builder()
             .timeout(Duration::from_secs(timeout_seconds))

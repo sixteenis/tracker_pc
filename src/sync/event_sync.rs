@@ -1,4 +1,17 @@
-//! 1분 주기 이벤트 배치 전송 (기획서 §17, §18, §22).
+//! ============================================================================
+//! sync::event_sync — 1분 주기 이벤트 배치 전송 (기획서 §17, §18, §22).
+//! ============================================================================
+//!
+//! - `local_events` 의 PENDING/FAILED 를 최대 50건씩 (`max_events_per_batch`) 묶어
+//!   `POST /api/pc-agent/events` 로 전송.
+//! - 응답의 `accepted_event_ids` 만 SUCCESS, 나머지는 FAILED + retry_count++.
+//! - 멱등성: 같은 `event_id` 가 두 번 가도 서버는 한 번만 저장.
+//!
+//! TODO(2차): retry_count 임계 (예: 20) 초과 시 dead-letter 분리.
+//! TODO(2차): 수동 동기화 트리거 — `tokio::sync::mpsc` 로 UI 의 "지금 동기화"
+//! 버튼과 연결. 현재는 1분 대기.
+//! TODO(2차): 네트워크 끊김 감지 — 연속 N회 실패 시 backoff 늘리고 UI 에 오프라인
+//! 뱃지 표시.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,6 +23,7 @@ use crate::api::types::{EventEntry, EventsBatch};
 use crate::app::AppState;
 use crate::db::events_repo;
 
+/// 메인 배치 전송 루프.
 pub async fn run(state: Arc<AppState>) {
     let interval = Duration::from_secs(
         state.config.intervals.event_batch_interval_seconds.max(15),

@@ -61,8 +61,8 @@ notify-rust = "4"
 # Random for jitter
 rand = "0.8"
 
-# Tray icon (cross-platform) — 1차 MVP 에서는 의존성만 잡아두고 실제 통합은 2차에서.
-# tray-icon = "0.13"
+# Tray icon (cross-platform) — 닫기 시 백그라운드 동작용.
+tray-icon = "0.13"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.56", features = [

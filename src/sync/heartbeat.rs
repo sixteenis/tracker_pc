@@ -1,5 +1,17 @@
-//! 3분 주기 heartbeat (기획서 §20). `can_track_time = false` 면 전송 생략.
-//! 서버 응답의 `next_heartbeat_seconds` 로 다음 주기를 동적으로 조정.
+//! ============================================================================
+//! sync::heartbeat — 3분 주기 PC 상태 보고 (기획서 §20).
+//! ============================================================================
+//!
+//! - `can_track_time = false` 면 전송 생략 (요금제 미포함 시 서버 부하 절약).
+//! - 서버 응답의 `next_heartbeat_seconds` 로 다음 주기를 동적으로 조정 (30~1800 클램프).
+//! - 응답에 `force_logout = true` 가 오면 즉시 `auth::logout` 호출.
+//!
+//! TODO(서버 연동): heartbeat 응답에 `attendance_status` 도 포함시키면 별도
+//! attendance_sync 폴링이 불필요해짐 (한 번의 RPC 로 모든 상태 동기화).
+//! TODO(UI 갱신): force_logout 호출 시 UI 가 자동으로 로그인 화면으로 가지 않음.
+//! `auth::logout` 이 단순히 세션만 비울 뿐, 라우터에는 별도 신호가 없음. 다음 UI
+//! 프레임에서 `state.is_logged_in() == false` 를 보고 자동 분기되긴 하지만
+//! 안내 토스트는 미구현.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,6 +25,7 @@ use crate::db::settings_repo;
 
 const KEY_LAST_HEARTBEAT: &str = "last_heartbeat_at";
 
+/// 메인 heartbeat 루프. 앱 종료까지 무한 반복.
 pub async fn run(state: Arc<AppState>) {
     let mut interval_secs = state.config.intervals.heartbeat_interval_seconds.max(30);
 

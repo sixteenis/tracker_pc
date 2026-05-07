@@ -1,6 +1,18 @@
-//! 서버 전송 대기 이벤트 큐 (`local_events`).
-//! - PENDING → 전송 시도 → SUCCESS / FAILED.
-//! - `event_id` (UUID) 기준 중복 방지.
+//! ============================================================================
+//! db::events_repo — 서버 전송 대기 이벤트 큐 (`local_events` 테이블).
+//! ============================================================================
+//!
+//! 흐름:
+//!   감지 모듈 → enqueue() → PENDING
+//!   sync::event_sync (1분 주기) → mark_success() (SUCCESS) 또는 mark_failed() (FAILED)
+//!   FAILED 도 다음 배치에서 다시 시도됨 (`pending_batch` 가 PENDING ∪ FAILED 반환).
+//!
+//! 멱등성: 모든 이벤트에 UUID `event_id` 부여. 서버는 같은 id 가 두 번 와도
+//! 한 번만 저장한다 (기획서 §17, §22).
+//!
+//! TODO(2차): retry_count 가 일정 임계 (예: 20) 이상이면 DLQ(dead letter) 상태로
+//! 분리해서 무한 재시도 막기. 1차 MVP 는 무한 재시도.
+//! TODO(2차): 오래된 SUCCESS 이벤트 정기 vacuum (현재 영구 보관 — 디스크 용량 누적).
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -44,7 +56,8 @@ pub struct EventRow {
     pub retry_count: i32,
 }
 
-/// 새 이벤트 enqueue. event_id 충돌 시 무시.
+/// 새 이벤트를 큐에 등록하고 발급된 `event_id` 를 반환.
+/// 동시에 여러 호출이 와도 UUID 라 충돌 위험은 사실상 없음.
 pub fn enqueue(
     db: &Database,
     event_type: &str,
@@ -68,6 +81,8 @@ pub fn enqueue(
     Ok(event_id)
 }
 
+/// 다음 배치 전송 대상 (PENDING + FAILED) 을 `limit` 만큼 반환.
+/// 오래된 것부터 (id ASC).
 pub fn pending_batch(db: &Database, limit: u32) -> Result<Vec<EventRow>> {
     let conn = db.lock();
     let mut stmt = conn.prepare(
@@ -97,6 +112,7 @@ pub fn pending_batch(db: &Database, limit: u32) -> Result<Vec<EventRow>> {
     Ok(rows)
 }
 
+/// 서버가 "받았다" 로 응답한 event_id 들을 SUCCESS 로 마크.
 pub fn mark_success(db: &Database, event_ids: &[String]) -> Result<()> {
     if event_ids.is_empty() {
         return Ok(());
@@ -116,6 +132,8 @@ pub fn mark_success(db: &Database, event_ids: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// 전송 실패한 event_id 들에 retry_count 증가 + 마지막 에러 메시지 기록.
+/// 다음 `pending_batch` 가 다시 가져간다.
 pub fn mark_failed(db: &Database, event_ids: &[String], err: &str) -> Result<()> {
     if event_ids.is_empty() {
         return Ok(());
