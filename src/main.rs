@@ -19,15 +19,12 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
-mod api;
-mod auth;
 mod config;
-mod db;
-mod device;
+mod constants;
+mod data;
+mod domain;
 mod lunch;
-mod monitor;
-mod notify;
-mod sync;
+mod platform;
 mod ui;
 mod util;
 
@@ -39,14 +36,15 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 /// tracing 로거를 한 번 초기화한다.
 ///
 /// - 환경변수 `RUST_LOG` 가 있으면 우선.
-/// - 없으면 `pinple_pc_agent={level},warn` (자기 크레이트만 상세, 외부 의존성은 warn 이상).
+/// - 없으면 `<crate>={level},warn` (자기 크레이트만 상세, 외부 의존성은 warn 이상).
 ///
 /// TODO(2차): 파일 회전 로그 추가 (현재 stdout 만). `tracing-appender` 의
 /// `rolling::daily` 를 사용해 `data_dir/logs/agent-YYYY-MM-DD.log` 형태로 저장하면
 /// Windows 에서도 디버깅 편의가 좋아진다.
 fn init_logging(level: &str) {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(format!("pinple_pc_agent={level},warn")));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new(format!("{}={level},warn", constants::LOG_CRATE_FILTER))
+    });
     tracing_subscriber::registry()
         .with(filter)
         .with(fmt::layer().with_target(false).compact())
@@ -54,10 +52,11 @@ fn init_logging(level: &str) {
 }
 
 fn main() -> anyhow::Result<()> {
-    // 1. 설정 로드 (Mock 모드 여부 등)
-    let cfg = config::AppConfig::load()?;
+    // 1. 설정 로드 (Mock 모드 여부 등) + 전역 슬롯 채우기.
+    //    이후 어떤 모듈이든 `AppConfig::global()` 로 접근 가능.
+    let cfg = config::AppConfig::init_global(config::AppConfig::load()?).clone();
     init_logging(&cfg.logging.level);
-    info!(version = %cfg.app.app_version, mock = cfg.api.mock_mode, "핀플 PC 앱 시작");
+    info!(version = %cfg.app.app_version, mock = cfg.api.mock_mode, "{} 시작", constants::APP_DISPLAY_NAME);
     info!(
         default_idle_threshold_seconds = cfg.policy_defaults.default_idle_threshold_seconds,
         idle_check_interval_seconds = cfg.intervals.idle_check_interval_seconds,
@@ -70,13 +69,16 @@ fn main() -> anyhow::Result<()> {
     //   macOS   : abstract socket (POSIX-like)
     //   Linux   : abstract socket
     // 인스턴스 가드는 main 끝까지 살아있어야 lock 유지됨 → `_instance_guard` 로 보관.
-    let _instance_guard = match single_instance::SingleInstance::new("io.pinple.pcagent.v1") {
+    let _instance_guard = match single_instance::SingleInstance::new(constants::INSTANCE_LOCK_ID) {
         Ok(inst) if inst.is_single() => Some(inst),
         Ok(_already_running) => {
-            tracing::warn!("핀플 PC 가 이미 실행 중입니다 — 두 번째 인스턴스를 종료합니다");
+            tracing::warn!(
+                "{} 가 이미 실행 중입니다 — 두 번째 인스턴스를 종료합니다",
+                constants::APP_DISPLAY_NAME
+            );
             // OS 알림으로 사용자에게 안내 (실패해도 무시).
             let _ = notify_rust::Notification::new()
-                .summary("핀플 PC")
+                .summary(constants::APP_DISPLAY_NAME)
                 .body("이미 실행 중입니다.\n시스템 트레이 아이콘을 확인해 주세요.")
                 .show();
             return Ok(());
@@ -97,19 +99,19 @@ fn main() -> anyhow::Result<()> {
         .build()?;
 
     // 3. SQLite 초기화 + 마이그레이션
-    let db_path = config::AppConfig::data_dir()?.join("pinple.db");
-    let db = db::Database::open(&db_path)?;
+    let db_path = config::AppConfig::data_dir()?.join(constants::DB_FILE_NAME);
+    let db = data::local::Database::open(&db_path)?;
     db.migrate()?;
 
     // 4. 디바이스 식별자 (최초 1회 영구 저장)
-    let device = device::DeviceInfo::load_or_create(&db)?;
+    let device = platform::device::DeviceInfo::load_or_create(&db)?;
 
     // 5. 공유 앱 상태
     let state = Arc::new(app::AppState::new(cfg.clone(), db, device, runtime.handle().clone()));
 
     // 6. 백그라운드 작업 — 감지/heartbeat/배치/정책/업데이트
-    monitor::spawn_all(state.clone());
-    sync::spawn_all(state.clone());
+    platform::monitor::spawn_all(state.clone());
+    platform::sync::spawn_all(state.clone());
 
     // 7. UI 메인 루프 (egui — 자체 이벤트 루프 점유)
     //    트레이 아이콘 + 백그라운드 동작은 `ui::tray` 모듈에서 처리.
@@ -117,18 +119,18 @@ fn main() -> anyhow::Result<()> {
     let ui_state = state.clone();
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("핀플 PC 에이전트")
+            .with_title(constants::APP_FULL_TITLE)
             .with_inner_size([900.0, 680.0])
             .with_min_inner_size([800.0, 580.0]),
         ..Default::default()
     };
     eframe::run_native(
-        "핀플 PC",
+        constants::APP_DISPLAY_NAME,
         native_options,
         Box::new(move |cc| Ok(Box::new(ui::PinpleApp::new(cc, ui_state)))),
     )
     .map_err(|e| anyhow::anyhow!("UI 실행 실패: {e}"))?;
 
-    info!("핀플 PC 앱 종료");
+    info!("{} 앱 종료", constants::APP_DISPLAY_NAME);
     Ok(())
 }

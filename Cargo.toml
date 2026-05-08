@@ -31,8 +31,10 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # IDs / Crypto
 uuid = { version = "1", features = ["v4", "serde"] }
+sha1 = "0.10"
 sha2 = "0.10"
 hex = "0.4"
+base64 = "0.22"
 
 # Logging
 tracing = "0.1"

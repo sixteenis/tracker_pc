@@ -21,7 +21,7 @@ use chrono::{DateTime, Duration, Utc};
 use eframe::egui;
 
 use crate::app::AppState;
-use crate::db::idle_segments_repo::{self, NewSegment, SegmentType};
+use crate::data::local::idle_segments_repo::{self, NewSegment, SegmentType};
 use crate::ui::Route;
 use crate::util;
 
@@ -64,7 +64,7 @@ fn content(
         }
     };
 
-    let segments = match idle_segments_repo::list_pending_for_employee(&state.db, &session.employee_id) {
+    let segments = match idle_segments_repo::list_pending_for_employee(&state.db, &session.employee_id_str) {
         Ok(s) => s,
         Err(e) => {
             ui.colored_label(egui::Color32::LIGHT_RED, format!("조회 실패: {e}"));
@@ -146,14 +146,14 @@ fn content(
 /// Mock 모드 전용 — 화면 검증을 위해 5분 짜리 자리비움 구간 1건을 즉시 생성.
 /// 실서버 모드에서는 이 함수가 호출되지 않음 (UI 가드).
 /// TODO(2차 정리): 정식 배포 전 본 함수와 호출 UI 제거.
-fn seed_test_segment(state: &Arc<AppState>, session: &crate::auth::Session) -> anyhow::Result<()> {
+fn seed_test_segment(state: &Arc<AppState>, session: &crate::domain::model::user::User) -> anyhow::Result<()> {
     let now = Utc::now();
     let start = now - Duration::minutes(5);
     let snapshot = state.snapshot_status();
     let policy = state.snapshot_policy();
     let new_seg = NewSegment {
-        company_id: session.company_id.clone(),
-        employee_id: session.employee_id.clone(),
+        company_id: session.company_id_str.clone(),
+        employee_id: session.employee_id_str.clone(),
         device_id: state.device.device_id.clone(),
         work_date: now.date_naive(),
         segment_type: SegmentType::PcIdle,
@@ -166,7 +166,7 @@ fn seed_test_segment(state: &Arc<AppState>, session: &crate::auth::Session) -> a
         ),
     };
     let segment_id = idle_segments_repo::insert(&state.db, &new_seg)?;
-    crate::db::events_repo::enqueue(
+    crate::data::local::events_repo::enqueue(
         &state.db,
         "IDLE_STARTED",
         now,

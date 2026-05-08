@@ -169,16 +169,28 @@ fn content(
                 });
             }
             SettingsTab::Account => {
-                let session = state.session.read().unwrap().clone();
+                // 사용자/회사/팀 정보는 도메인 서비스에서 직접 가져온다.
+                let user = crate::domain::service::user_service::current();
+                let company = crate::domain::service::company_service::current();
+                let team = crate::domain::service::team_service::current();
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.add_space(pad);
                     ui.vertical(|ui| {
-                        if let Some(sess) = &session {
-                            info_row(ui, "이름", sess.employee_name.as_deref().unwrap_or("—"));
-                            info_row(ui, "사원 ID", &sess.employee_id);
-                            info_row(ui, "회사 ID", &sess.company_id);
-                            info_row(ui, "팀", sess.team_name.as_deref().unwrap_or("—"));
+                        if let Some(u) = &user {
+                            info_row(ui, "이름", &u.name_for_display());
+                            info_row(ui, "이메일", &u.email);
+                            info_row(ui, "사원 ID", &u.employee_id.to_string());
+                            info_row(
+                                ui,
+                                "회사",
+                                &company.as_ref().map(|c| c.name.clone()).unwrap_or_else(|| "—".to_string()),
+                            );
+                            info_row(
+                                ui,
+                                "팀",
+                                &team.as_ref().map(|t| t.name.clone()).unwrap_or_else(|| "—".to_string()),
+                            );
                             info_row(ui, "기기 ID", &state.device.device_id);
                             info_row(ui, "기기명", &state.device.device_name);
                             info_row(ui, "앱 버전", &state.config.app.app_version);
@@ -193,7 +205,7 @@ fn content(
                         .rounding(egui::Rounding::same(8.0))
                         .min_size(egui::vec2(120.0, 38.0));
                         if ui.add(logout_btn).clicked() {
-                            let _ = crate::auth::logout(state);
+                            let _ = crate::domain::service::user_service::logout(state);
                             *route = Route::Login;
                         }
                     });

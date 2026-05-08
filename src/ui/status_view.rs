@@ -22,7 +22,7 @@ use chrono::{Local, Timelike, Utc};
 use eframe::egui;
 
 use crate::app::{AppState, PcStatus};
-use crate::db::idle_segments_repo::{self, IdleSegment, SegmentType};
+use crate::data::local::idle_segments_repo::{self, IdleSegment, SegmentType};
 use crate::ui::{BG, GRAY_TEXT, GREEN_STATUS, NAVY, ORANGE, TIMELINE_ACTIVE, TIMELINE_IDLE, TIMELINE_LOCKED, Route};
 use crate::util;
 
@@ -34,7 +34,7 @@ pub fn show(ctx: &egui::Context, state: &Arc<AppState>, route: &mut Route) {
 
     let today_segments = session
         .as_ref()
-        .and_then(|s| idle_segments_repo::list_for_date(&state.db, &s.employee_id, today).ok())
+        .and_then(|s| idle_segments_repo::list_for_date(&state.db, &s.employee_id_str, today).ok())
         .unwrap_or_default();
 
     let pending_count = today_segments
@@ -64,12 +64,14 @@ pub fn show(ctx: &egui::Context, state: &Arc<AppState>, route: &mut Route) {
                             .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 180)),
                     );
                     ui.add_space(2.0);
+                    let team_name = crate::domain::service::team_service::current()
+                        .map(|t| t.name)
+                        .unwrap_or_default();
                     let name = session
                         .as_ref()
                         .map(|s| {
-                            let n = s.employee_name.clone().unwrap_or_else(|| s.employee_id.clone());
-                            let t = s.team_name.clone().unwrap_or_default();
-                            format!("{n} {t}")
+                            let n = s.name_for_display();
+                            format!("{n} {team_name}").trim().to_string()
                         })
                         .unwrap_or_else(|| "—".to_string());
                     ui.label(

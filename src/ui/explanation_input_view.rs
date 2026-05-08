@@ -16,10 +16,11 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 
-use crate::api::types::{ExplanationSubmit, ExplanationType};
+use crate::data::dto::{ExplanationSubmit, ExplanationType};
 use crate::app::AppState;
-use crate::db::explanations_repo::{self, NewExplanation};
-use crate::db::idle_segments_repo;
+use crate::constants;
+use crate::data::local::explanations_repo::{self, NewExplanation};
+use crate::data::local::idle_segments_repo;
 use crate::ui::Route;
 use crate::util;
 
@@ -70,7 +71,7 @@ fn content(
         }
     };
 
-    let segments = match idle_segments_repo::list_pending_for_employee(&state.db, &session.employee_id) {
+    let segments = match idle_segments_repo::list_pending_for_employee(&state.db, &session.employee_id_str) {
         Ok(s) => s,
         Err(e) => {
             ui.colored_label(egui::Color32::LIGHT_RED, format!("조회 실패: {e}"));
@@ -183,16 +184,15 @@ fn submit(state: &Arc<AppState>, seg: &idle_segments_repo::IdleSegment, form: &m
         segment_id: new.segment_id.clone(),
         explanation_type: new.explanation_type.clone(),
         explanation_text: new.explanation_text.clone(),
-        submitted_from: "PC_APP".to_string(),
+        submitted_from: constants::SUBMITTED_FROM_PC_APP.to_string(),
     };
     let status_slot = form.status.clone();
     state.runtime.spawn(async move {
         let maybe_session = state2.session.read().unwrap().clone();
-        let session = match maybe_session {
-            Some(s) => s,
-            None => return,
-        };
-        match state2.api.submit_explanation(&session.access_token, payload).await {
+        if maybe_session.is_none() {
+            return;
+        }
+        match state2.api.submit_explanation(payload).await {
             Ok(()) => {
                 let _ = explanations_repo::mark_synced(&state2.db, local_id);
                 if let Ok(mut s) = status_slot.lock() {

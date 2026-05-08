@@ -136,7 +136,7 @@ impl App for PinpleApp {
                     Quit => {
                         self.really_quit = true;
                         // APP_STOPPED 이벤트 enqueue (다음 배치에서 전송).
-                        let _ = crate::monitor::lifecycle::record_stopped(&self.state);
+                        let _ = crate::platform::monitor::lifecycle::record_stopped(&self.state);
 
                         // 트레이 아이콘 명시적 드롭 — TrayIcon::Drop 이 NIM_DELETE 호출하며
                         // 트레이에서 즉시 제거 (Windows ghost icon 방지).
@@ -280,9 +280,9 @@ fn setup_visuals(ctx: &egui::Context) {
 fn kick_auto_login(state: Arc<AppState>) {
     let runtime = state.runtime.clone();
     runtime.spawn(async move {
-        match crate::auth::try_auto_login(&state).await {
-            Ok(Some(())) => info!("자동로그인 성공"),
-            Ok(None) => info!("자동로그인 대상 없음"),
+        match crate::domain::service::user_service::try_auto_login(&state).await {
+            Ok(true) => info!("자동로그인 성공"),
+            Ok(false) => info!("자동로그인 대상 없음"),
             Err(e) => tracing::warn!(error = %e, "자동로그인 처리 실패"),
         }
     });

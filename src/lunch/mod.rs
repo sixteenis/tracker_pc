@@ -18,7 +18,7 @@
 
 use chrono::{DateTime, Datelike, Duration, Local, NaiveTime, TimeZone, Utc};
 
-use crate::api::types::PolicySnapshot;
+use crate::data::dto::PolicySnapshot;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LunchClassification {
@@ -94,7 +94,7 @@ fn time_seconds(t: NaiveTime) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::types::PolicySnapshot;
+    use crate::data::dto::PolicySnapshot;
     use chrono::TimeZone;
 
     fn policy() -> PolicySnapshot {

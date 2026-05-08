@@ -13,12 +13,13 @@ use std::sync::{Arc, Mutex};
 use eframe::egui;
 
 use crate::app::AppState;
+use crate::constants;
 use crate::ui::{GRAY_TEXT, NAVY, ORANGE, Route};
 
 /// 로그인 입력 상태. `PinpleApp` 에 한 번 보관되며 실패 시 에러 메시지 유지.
 #[derive(Default)]
 pub struct LoginForm {
-    pub login_id: String,
+    pub email: String,
     pub password: String,
     pub auto_login: bool,
     pub error: Arc<Mutex<Option<String>>>,
@@ -66,7 +67,7 @@ pub fn ui(ui: &mut egui::Ui, state: &Arc<AppState>, form: &mut LoginForm, route:
 
                     ui.add_space(14.0);
                     ui.label(
-                        egui::RichText::new("핀플 PC 에이전트")
+                        egui::RichText::new(constants::APP_FULL_TITLE)
                             .size(26.0)
                             .color(NAVY)
                             .strong(),
@@ -86,12 +87,12 @@ pub fn ui(ui: &mut egui::Ui, state: &Arc<AppState>, form: &mut LoginForm, route:
 
                 ui.add_space(22.0);
 
-                // 아이디
-                ui.label(egui::RichText::new("아이디").size(13.0).color(NAVY).strong());
+                // 이메일
+                ui.label(egui::RichText::new("이메일").size(13.0).color(NAVY).strong());
                 ui.add_space(3.0);
                 ui.add(
-                    egui::TextEdit::singleline(&mut form.login_id)
-                        .hint_text("worker@example")
+                    egui::TextEdit::singleline(&mut form.email)
+                        .hint_text("worker@example.com")
                         .desired_width(f32::INFINITY)
                         .margin(egui::vec2(12.0, 10.0)),
                 );
@@ -135,7 +136,7 @@ pub fn ui(ui: &mut egui::Ui, state: &Arc<AppState>, form: &mut LoginForm, route:
                     ORANGE
                 };
                 let btn_w = ui.available_width();
-                let enabled = !busy && !form.login_id.is_empty() && !form.password.is_empty();
+                let enabled = !busy && !form.email.is_empty() && !form.password.is_empty();
                 let btn = egui::Button::new(
                     egui::RichText::new(btn_text)
                         .size(15.0)
@@ -203,10 +204,10 @@ pub fn ui(ui: &mut egui::Ui, state: &Arc<AppState>, form: &mut LoginForm, route:
 
 /// 로그인 버튼 클릭 시 호출. 비밀번호를 form 에서 take() 해서 비동기 task 로 전달
 /// — 함수 종료와 함께 form.password 는 빈 문자열이 되며, 비동기 task 종료 시
-/// 그 안의 pw 도 drop. 어디에도 영구 저장되지 않는다.
+/// 그 안의 pw 도 drop. 평문 비밀번호는 어디에도 영구 저장되지 않는다.
 fn start_login(state: &Arc<AppState>, form: &mut LoginForm) {
     let state = state.clone();
-    let id = form.login_id.clone();
+    let email = form.email.trim().to_string();
     let pw = std::mem::take(&mut form.password);
     let auto = form.auto_login;
     let err_slot = form.error.clone();
@@ -215,7 +216,7 @@ fn start_login(state: &Arc<AppState>, form: &mut LoginForm) {
 
     let runtime = state.runtime.clone();
     runtime.spawn(async move {
-        let result = crate::auth::login(&state, &id, &pw, auto).await;
+        let result = crate::domain::service::user_service::login(&state, &email, &pw, auto).await;
         if let Ok(mut e) = err_slot.lock() {
             *e = result.as_ref().err().map(|err| err.to_string());
         }

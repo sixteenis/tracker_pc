@@ -21,12 +21,14 @@ use std::sync::{Arc, RwLock};
 use chrono::{DateTime, Utc};
 use tokio::runtime::Handle;
 
-use crate::api::ApiClient;
-use crate::api::types::{AttendanceStatus, PolicySnapshot, UpdateInfo};
-use crate::auth::Session;
 use crate::config::AppConfig;
-use crate::db::Database;
-use crate::device::DeviceInfo;
+use crate::data::api::ApiClient;
+use crate::data::dto::{AttendanceStatus, PolicySnapshot, UpdateInfo};
+use crate::data::local::Database;
+use crate::platform::device::DeviceInfo;
+
+/// 호환을 위해 `Session` 이름은 `domain::model::user::User` 와 동일 타입으로 노출.
+pub type Session = crate::domain::model::user::User;
 
 /// 현재 PC 상태 — UI / heartbeat 송신 / 통계 집계가 공통으로 사용.
 ///
@@ -112,9 +114,9 @@ impl AppState {
     /// `config.api.mock_mode` 에 따라 API 구현체가 자동 선택된다.
     pub fn new(config: AppConfig, db: Database, device: DeviceInfo, runtime: Handle) -> Self {
         let api: Arc<dyn ApiClient> = if config.api.mock_mode {
-            Arc::new(crate::api::mock::MockClient::new())
+            Arc::new(crate::data::api::mock::MockClient::new())
         } else {
-            Arc::new(crate::api::client::HttpApiClient::new(
+            Arc::new(crate::data::api::client::HttpApiClient::new(
                 config.api.base_url.clone(),
                 config.api.timeout_seconds,
             ))
@@ -145,7 +147,9 @@ impl AppState {
         self.status.read().map(|s| s.can_track_time).unwrap_or(false)
     }
 
-    /// 세션 갱신/제거. `auth` 모듈만 사용.
+    /// 세션 갱신/제거. `domain::service::user_service` 만 호출한다.
+    /// 글로벌 싱글톤(`user_service::CURRENT`) 도 같은 사용자 정보를 들고 있으므로
+    /// UI 와 sync 가 어느 경로로 읽어도 동일한 값이 보인다.
     pub fn set_session(&self, sess: Option<Session>) {
         if let Ok(mut w) = self.session.write() {
             *w = sess;

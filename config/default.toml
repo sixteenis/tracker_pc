@@ -5,10 +5,10 @@
 
 [api]
 # 실 서버 URL. Mock 모드에서는 호출되지 않음.
-base_url = "https://api.pinple.io"
+base_url = "http://192.168.0.100:8802"
 timeout_seconds = 15
 # true 로 설정하면 모든 네트워크 호출이 in-process 가짜 응답으로 처리됨.
-mock_mode = true
+mock_mode = false
 
 [app]
 app_version = "0.1.0"
@@ -31,6 +31,7 @@ default_idle_threshold_seconds    = 5
 default_lunch_start_time          = "11:30"
 default_lunch_end_time            = "14:00"
 default_lunch_allowed_minutes     = 60
+default_explanation_deadline_hours = 48
 
 [logging]
 # trace, debug, info, warn, error

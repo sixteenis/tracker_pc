@@ -31,6 +31,8 @@ use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
 
+use crate::constants;
+
 /// Windows 전용: Win32 API 로 창을 직접 복원 + 전면으로 가져오기.
 /// eframe 의 ViewportCommand 와 독립적으로 동작하므로, update() 호출 여부와 무관.
 /// 트레이 메뉴 클릭 직후에 호출 → Windows 가 foreground 전환을 허용하는 타이밍.
@@ -41,8 +43,10 @@ fn native_show_window() {
         FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE,
     };
 
-    // 창 제목 "핀플 PC" — main.rs eframe::run_native 의 첫 번째 인자와 동일해야 함.
-    let title: Vec<u16> = "핀플 PC\0".encode_utf16().collect();
+    // 창 제목 — main.rs eframe::run_native 의 첫 번째 인자와 동일해야 함.
+    let title: Vec<u16> = format!("{}\0", crate::constants::APP_DISPLAY_NAME)
+        .encode_utf16()
+        .collect();
     unsafe {
         let hwnd = FindWindowW(PCWSTR(std::ptr::null()), PCWSTR(title.as_ptr()));
         if hwnd.0 == 0 {
@@ -95,7 +99,7 @@ impl TrayHandle {
         let icon = make_default_icon();
 
         let tray = TrayIconBuilder::new()
-            .with_tooltip("핀플 PC")
+            .with_tooltip(constants::APP_DISPLAY_NAME)
             .with_icon(icon)
             .with_menu(Box::new(menu))
             .build()?;
