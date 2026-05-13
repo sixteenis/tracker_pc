@@ -2,26 +2,46 @@
 //! domain::service::user_service — 로그인 사용자 도메인 서비스.
 //! ============================================================================
 //!
-//! 앱 어디에서든:
-//!   - `current()` — 로그인된 `User` 사본 (`Option`)
-//!   - `is_logged_in()` — 빠른 boolean
-//!   - `login(state, email, password, auto)` — 평문 자격증명으로 로그인 시도
-//!   - `try_auto_login(state)` — keyring 자격증명으로 자동 로그인
-//!   - `logout(state)` — 모든 사용자 상태 제거
-//!
-//! 로그인 성공 시 `User` 가 본 모듈 내부 `RwLock<Option<User>>` 에 보관되며,
-//! 동시에 `AppState::session` 에도 동기화된다 (기존 sync/UI 호환).
+//! 본 서비스는 "현재 로그인된 사용자" 슬롯의 보관자 역할만 한다.
+//! 실제 로그인/자동로그인 흐름의 오케스트레이션(인증 → 요금제 → 메인정보)은
+//! `domain::usecase::user_usecase::{login, auto_login}` 가 담당하며, 이들이
+//! 본 서비스의 `set_current` / `logout` 을 호출한다.
 
 use std::sync::RwLock;
 
 use anyhow::Result;
+use chrono::Utc;
 use once_cell::sync::Lazy;
 use tracing::info;
 
 use crate::app::AppState;
+use crate::data::local::events_repo;
 use crate::data::repository::auth_repository;
 use crate::domain::model::user::User;
+use crate::domain::service::{
+    attendance_service, company_service, explanation_type_service, main_info_service,
+    policy_service, subscription_service, team_service, work_status_service,
+};
 use crate::platform::credential_store;
+
+/// 로그아웃 원인 — events 채널의 `LOGOUT` 이벤트 `reason` 필드 값.
+/// 서버가 PCAGT_PRESENCE_LOG.REASON 으로 매핑.
+#[derive(Debug, Clone, Copy)]
+pub enum LogoutReason {
+    /// 사용자가 UI 에서 명시적으로 로그아웃 (설정 화면, Disabled 화면).
+    UserAction,
+    /// `GET /user-info` 응답 `force_logout=true` 수신 (인증 무효화 — 이메일/비번 변경, 퇴사 등).
+    ForceLogout,
+}
+
+impl LogoutReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::UserAction => "USER_ACTION",
+            Self::ForceLogout => "FORCE_LOGOUT",
+        }
+    }
+}
 
 /// 프로세스 전역 회원 정보 슬롯.
 static CURRENT: Lazy<RwLock<Option<User>>> = Lazy::new(|| RwLock::new(None));
@@ -36,38 +56,44 @@ pub fn is_logged_in() -> bool {
     CURRENT.read().map(|g| g.is_some()).unwrap_or(false)
 }
 
-/// 사용자가 입력한 평문 자격증명으로 로그인. 성공 시 도메인 / AppState 모두 갱신.
-pub async fn login(
-    state: &AppState,
-    email: &str,
-    password: &str,
-    auto_login: bool,
-) -> Result<User> {
-    let user = auth_repository::login(state, email, password, auto_login).await?;
-    set_current(state, user.clone());
+/// 로그인 usecase 성공 시 호출 — 메모리 / AppState 양쪽 갱신.
+pub fn set_current(state: &AppState, user: User) {
     info!(email = %mask_email(&user.email), "도메인: 사용자 로그인 완료");
-    Ok(user)
-}
-
-/// 자동 로그인 — keyring 의 자격증명으로 같은 login 엔드포인트 재호출.
-/// 결과:
-///   - `Ok(true)`  : 성공 — UI 라우팅 분기
-///   - `Ok(false)` : 자격증명 없음 / 실패 (자격증명은 폐기됨)
-///   - `Err(_)`    : 네트워크 등 일시 장애
-pub async fn try_auto_login(state: &AppState) -> Result<bool> {
-    match auth_repository::try_auto_login(state).await? {
-        Some(user) => {
-            set_current(state, user);
-            Ok(true)
-        }
-        None => Ok(false),
+    if let Ok(mut g) = CURRENT.write() {
+        *g = Some(user.clone());
     }
+    state.set_session(Some(user));
 }
 
-/// 모든 사용자 상태 제거 (메모리 / DB / keyring / AppState).
-pub fn logout(state: &AppState) -> Result<()> {
+/// 모든 사용자 상태 제거 (메모리 / DB / keyring / AppState / 메인정보 / 요금제) + LOGOUT 이벤트 enqueue.
+///
+/// `reason` 은 PRESENCE_LOG 매핑용 — `UserAction` (UI 로그아웃) / `ForceLogout` (서버 force_logout).
+/// 인증 실패(자동로그인 시도 실패) 처럼 **세션이 시작된 적 없는** 케이스는 본 함수 호출 X
+/// (`auth_repository::try_auto_authenticate` 가 직접 자격증명/DB row 만 폐기).
+pub fn logout(state: &AppState, reason: LogoutReason) -> Result<()> {
+    // LOGOUT 이벤트 — credential / DB 정리 전에 enqueue (events 큐는 별도 테이블이라 정리에 영향 없음).
+    let _ = events_repo::enqueue(
+        &state.db,
+        "LOGOUT",
+        Utc::now(),
+        &serde_json::json!({
+            "reason": reason.as_str(),
+            "device_id": state.device.device_id,
+            "app_version": state.config.app.app_version,
+        }),
+    );
+
     let _ = credential_store::clear();
     auth_repository::clear_local(state)?;
+    main_info_service::clear();
+    subscription_service::clear();
+    explanation_type_service::clear();
+    work_status_service::clear();
+    // 다른 계정 로그인 시 이전 사용자 정보 잔재 방지 (2026-05-13 추가).
+    company_service::clear();
+    team_service::clear();
+    attendance_service::clear();
+    policy_service::clear();
     if let Ok(mut g) = CURRENT.write() {
         *g = None;
     }
@@ -76,15 +102,6 @@ pub fn logout(state: &AppState) -> Result<()> {
         s.can_track_time = false;
     }
     Ok(())
-}
-
-// ─────────────────────────── 내부 ───────────────────────────
-
-fn set_current(state: &AppState, user: User) {
-    if let Ok(mut g) = CURRENT.write() {
-        *g = Some(user.clone());
-    }
-    state.set_session(Some(user));
 }
 
 fn mask_email(email: &str) -> String {

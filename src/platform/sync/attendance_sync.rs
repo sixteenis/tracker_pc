@@ -26,11 +26,14 @@ pub async fn run(state: Arc<AppState>) {
 
     loop {
         let maybe_session = state.session.read().unwrap().clone();
-        if maybe_session.is_none() {
-            tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_SECONDS)).await;
-            continue;
-        }
-        match state.api.get_attendance().await {
+        let session = match maybe_session {
+            Some(s) => s,
+            None => {
+                tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_SECONDS)).await;
+                continue;
+            }
+        };
+        match state.api.get_attendance(session.employee_id).await {
             Ok(snap) => {
                 if let Ok(mut s) = state.status.write() {
                     s.attendance = snap.attendance_status;

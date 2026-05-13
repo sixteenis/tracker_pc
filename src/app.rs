@@ -13,7 +13,7 @@
 //! - UI 는 1초마다 repaint 하며 `snapshot_*` 메서드로 최신 값을 가져온다.
 //!
 //! TODO(2차): UI repaint 트리거 채널(`tokio::sync::watch` 또는 `egui_ctx.request_repaint`)
-//! 을 도입해서 idle/heartbeat 이벤트 발생 시 즉시 화면 갱신.
+//! 을 도입해서 idle / 동기화 이벤트 발생 시 즉시 화면 갱신.
 //! TODO(2차): 종료 시 `record_stopped` 호출 hook (eframe::App::on_exit) 추가.
 
 use std::sync::{Arc, RwLock};
@@ -30,7 +30,7 @@ use crate::platform::device::DeviceInfo;
 /// 호환을 위해 `Session` 이름은 `domain::model::user::User` 와 동일 타입으로 노출.
 pub type Session = crate::domain::model::user::User;
 
-/// 현재 PC 상태 — UI / heartbeat 송신 / 통계 집계가 공통으로 사용.
+/// 현재 PC 상태 — UI / events 송신 / 통계 집계가 공통으로 사용.
 ///
 /// 상태 전이는 `monitor::idle_detector` (Active↔Idle), `monitor::session_events`
 /// (Locked) 가 담당. `Offline` / `AppClosing` 은 sync 레이어가 설정.
@@ -44,7 +44,7 @@ pub enum PcStatus {
 }
 
 impl PcStatus {
-    /// 서버 페이로드(`heartbeat`) 에 그대로 사용되는 ASCII 코드.
+    /// 서버 이벤트 페이로드에 그대로 사용되는 ASCII 코드.
     pub fn as_str(&self) -> &'static str {
         match self {
             PcStatus::Active => "ACTIVE",
@@ -56,7 +56,7 @@ impl PcStatus {
     }
 }
 
-/// 매 5초마다 갱신되는 라이브 상태. heartbeat / UI 양쪽이 참조.
+/// 매 5초마다 갱신되는 라이브 상태. sync / UI 양쪽이 참조.
 #[derive(Debug, Clone)]
 pub struct LiveStatus {
     pub pc_status: PcStatus,
@@ -65,14 +65,15 @@ pub struct LiveStatus {
     pub is_locked: bool,
     pub attendance: AttendanceStatus,
     /// 요금제 권한 (`subscription.can_track_time && policy.can_track_time`).
-    /// false 면 idle 감지/이벤트 enqueue/heartbeat 모두 skip.
+    /// false 면 idle 감지 / 이벤트 enqueue 모두 skip.
     pub can_track_time: bool,
     pub effective_idle_threshold_seconds: u64,
     pub policy_scope: String,
     pub policy_version: i64,
-    pub last_heartbeat_at: Option<DateTime<Utc>>,
     pub last_event_sync_at: Option<DateTime<Utc>>,
     pub last_policy_sync_at: Option<DateTime<Utc>>,
+    /// 마지막 `/user-info` 응답 수신 시각 (출근/요금제/유저정보 통합 갱신)
+    pub last_user_info_sync_at: Option<DateTime<Utc>>,
 }
 
 impl LiveStatus {
@@ -88,9 +89,9 @@ impl LiveStatus {
             effective_idle_threshold_seconds: default_idle,
             policy_scope: "DEFAULT".to_string(),
             policy_version: 0,
-            last_heartbeat_at: None,
             last_event_sync_at: None,
             last_policy_sync_at: None,
+            last_user_info_sync_at: None,
         }
     }
 }
@@ -118,6 +119,7 @@ impl AppState {
         } else {
             Arc::new(crate::data::api::client::HttpApiClient::new(
                 config.api.base_url.clone(),
+                config.api.base_url_v2.clone(),
                 config.api.timeout_seconds,
             ))
         };
@@ -142,7 +144,7 @@ impl AppState {
     }
 
     /// 요금제 + 정책 양쪽이 PC 추적을 허용하는지.
-    /// false 일 때 `monitor::idle_detector` 와 `sync::heartbeat` 가 자동 skip.
+    /// false 일 때 `monitor::idle_detector` 와 `sync::event_sync` 가 자동 skip.
     pub fn can_track_time(&self) -> bool {
         self.status.read().map(|s| s.can_track_time).unwrap_or(false)
     }

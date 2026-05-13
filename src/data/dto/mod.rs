@@ -10,13 +10,31 @@
 //! 신규 서버 명세가 들어오는 엔드포인트부터 순차적으로 별도 파일(`login_dto.rs`,
 //! `policy_dto.rs` 등) 로 분리.
 
+pub mod explanation_type_admin_dto;
+pub mod explanation_type_dto;
 pub mod login_dto;
+pub mod main_info_dto;
+pub mod pay_use_dto;
+pub mod policy_patch_dto;
+pub mod user_info_dto;
+pub mod work_status_dto;
 
-// 임시: 정책/heartbeat/이벤트/소명/출근/업데이트 DTO 는 아직 신규 서버 명세 미정.
+// 임시: 정책/이벤트/소명/출근/업데이트 DTO 는 아직 신규 서버 명세 미정.
 // 기존 타입들을 그대로 재export 해서 `data::api` 와 `repository` 가 사용한다.
+// (소명 사유 enum `ExplanationType` 은 Phase 1.b 에서 폐기 → `explanation_type_dto::ExplanationType`)
 mod _legacy_types;
 pub use _legacy_types::{
     AttendanceSnapshot, AttendanceStatus, EventEntry, EventsBatch, EventsBatchResponse,
-    ExplanationSubmit, ExplanationType, HeartbeatRequest, HeartbeatResponse, PolicySnapshot,
-    RemoteExplanation, UpdateCheckRequest, UpdateInfo,
+    ExplanationSubmit, PolicySnapshot, RemoteExplanation, UpdateCheckRequest, UpdateInfo,
+};
+
+pub use explanation_type_admin_dto::{
+    CreateExplanationTypeRequest, DeactivateExplanationTypeRequest, ExplanationUsageEntry,
+    PatchExplanationTypeRequest,
+};
+pub use explanation_type_dto::{ExplanationScopeKeys, ExplanationType, ExplanationTypesResponse};
+pub use policy_patch_dto::{PolicyPatchFields, PolicyPatchRequest};
+
+pub use user_info_dto::{
+    UserInfoAttendance, UserInfoSnapshot, UserInfoSubscription, UserInfoUser,
 };

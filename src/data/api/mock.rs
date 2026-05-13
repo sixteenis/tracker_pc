@@ -21,6 +21,8 @@ use futures::future::{BoxFuture, FutureExt};
 
 use super::ApiClient;
 use crate::data::dto::login_dto::{LoginRequestDto, LoginResponseDto};
+use crate::data::dto::main_info_dto::MainInfoResponseDto;
+use crate::data::dto::pay_use_dto::CheckPayUseResponseDto;
 use crate::data::dto::*;
 
 pub struct MockClient {
@@ -46,8 +48,6 @@ impl MockClient {
             lunch_end_time: "14:00".to_string(),
             lunch_allowed_minutes: 60,
             explanation_deadline_hours: 48,
-            heartbeat_interval_seconds: 180,
-            event_batch_interval_seconds: 60,
             can_track_time: true,
         }
     }
@@ -91,7 +91,47 @@ impl ApiClient for MockClient {
         async move { Ok(Self::fake_member(&req.email)) }.boxed()
     }
 
-    fn get_policy<'a>(&'a self) -> BoxFuture<'a, Result<PolicySnapshot>> {
+    fn check_pay_use<'a>(
+        &'a self,
+        _cmpsid: i64,
+        _mbrsid: i64,
+    ) -> BoxFuture<'a, Result<CheckPayUseResponseDto>> {
+        async move { Ok(CheckPayUseResponseDto { pinpluse: true, payuse: true }) }.boxed()
+    }
+
+    fn get_main_info<'a>(
+        &'a self,
+        _empsid: i64,
+        _cmpsid: i64,
+        _ttmsid: i64,
+        _temsid: i64,
+    ) -> BoxFuture<'a, Result<MainInfoResponseDto>> {
+        async move {
+            Ok(MainInfoResponseDto {
+                starttm: "09:00".to_string(),
+                endtm: "18:00".to_string(),
+                joindt: "2023-11-09".to_string(),
+                anual: 7200,
+                workmin: 0,
+                addmin: 0,
+                usemin: 0,
+                msgcnt: 0,
+                anualddctn1: 1,
+                anualddctn2: 1,
+                anualddctn3: 1,
+                st_anual: 1,
+                st_d_anual: 1,
+                brk_time: 1,
+                schdl: 1,
+                cmt_lt: 2,
+                cmtnoti: 0,
+                wk52h: 0,
+            })
+        }
+        .boxed()
+    }
+
+    fn get_policy<'a>(&'a self, _emp_sid: i64) -> BoxFuture<'a, Result<PolicySnapshot>> {
         async move { Ok(Self::fake_policy()) }.boxed()
     }
 
@@ -110,21 +150,6 @@ impl ApiClient for MockClient {
         .boxed()
     }
 
-    fn send_heartbeat<'a>(
-        &'a self,
-        _beat: HeartbeatRequest,
-    ) -> BoxFuture<'a, Result<HeartbeatResponse>> {
-        async move {
-            Ok(HeartbeatResponse {
-                next_heartbeat_seconds: 180,
-                policy_version: 1,
-                can_track_time: true,
-                force_logout: false,
-            })
-        }
-        .boxed()
-    }
-
     fn send_events<'a>(&'a self, batch: EventsBatch) -> BoxFuture<'a, Result<EventsBatchResponse>> {
         async move {
             let ids = batch.events.into_iter().map(|e| e.event_id).collect();
@@ -133,7 +158,7 @@ impl ApiClient for MockClient {
         .boxed()
     }
 
-    fn list_explanations<'a>(&'a self) -> BoxFuture<'a, Result<Vec<RemoteExplanation>>> {
+    fn list_explanations<'a>(&'a self, _emp_sid: i64) -> BoxFuture<'a, Result<Vec<RemoteExplanation>>> {
         async move { Ok(Vec::new()) }.boxed()
     }
 
@@ -145,12 +170,203 @@ impl ApiClient for MockClient {
         .boxed()
     }
 
-    fn get_attendance<'a>(&'a self) -> BoxFuture<'a, Result<AttendanceSnapshot>> {
+    fn get_attendance<'a>(&'a self, _emp_sid: i64) -> BoxFuture<'a, Result<AttendanceSnapshot>> {
         async move {
             Ok(AttendanceSnapshot {
                 attendance_status: AttendanceStatus::Working,
                 work_start_at: Some(Utc::now()),
                 work_end_at: None,
+            })
+        }
+        .boxed()
+    }
+
+    fn get_user_info<'a>(&'a self, emp_sid: i64) -> BoxFuture<'a, Result<UserInfoSnapshot>> {
+        async move {
+            Ok(UserInfoSnapshot {
+                user: UserInfoUser {
+                    employee_id: emp_sid.to_string(),
+                    employee_name: "박일일".to_string(),
+                    english_name: String::new(),
+                    company_id: "11402".to_string(),
+                    company_name: "성민".to_string(),
+                    team_id: Some("9869".to_string()),
+                    team_name: "개발".to_string(),
+                    team_template_id: Some("3221".to_string()),
+                    team_template_name: "성민".to_string(),
+                    position: String::new(),
+                    employee_number: String::new(),
+                    phone: "01011112222".to_string(),
+                    email: "mock@example.com".to_string(),
+                    authority: 5,
+                    join_date: Some("2020-02-02".to_string()),
+                    leave_date: None,
+                },
+                subscription: UserInfoSubscription {
+                    plan_code: "PRO".to_string(),
+                    payment_status: "ACTIVE".to_string(),
+                    pc_tracking_enabled: true,
+                    can_track_time: true,
+                    valid_until: Some("2026-12-31".to_string()),
+                },
+                attendance: UserInfoAttendance {
+                    attendance_status: AttendanceStatus::Working,
+                    work_start_at: Some(Utc::now()),
+                    work_end_at: None,
+                },
+                polled_at: Utc::now(),
+                next_poll_seconds: 3600,
+                force_logout: false,
+                explanation_types_version: 1_736_654_321,
+            })
+        }
+        .boxed()
+    }
+
+    fn get_work_status<'a>(
+        &'a self,
+        _empsid: i64,
+    ) -> BoxFuture<'a, Result<crate::data::dto::work_status_dto::WorkStatusResponseDto>> {
+        async move {
+            // Mock: 근무중 가정 (result > 0).
+            Ok(crate::data::dto::work_status_dto::WorkStatusResponseDto {
+                result: 14148240,
+                startdt: "2026-05-12 09:00:00".to_string(),
+            })
+        }
+        .boxed()
+    }
+
+    fn patch_policy<'a>(
+        &'a self,
+        req: PolicyPatchRequest,
+    ) -> BoxFuture<'a, Result<PolicySnapshot>> {
+        async move {
+            // Mock: 기본 정책에 patch 적용한 결과 반환. POLICY_VERSION 증가.
+            let mut p = Self::fake_policy();
+            p.policy_version += 1;
+            if let Some(v) = req.patch.idle_threshold_seconds {
+                p.effective_idle_threshold_seconds = v;
+                p.company_idle_threshold_seconds = Some(v);
+            }
+            if let Some(v) = req.patch.lunch_start_time {
+                p.lunch_start_time = v;
+            }
+            if let Some(v) = req.patch.lunch_end_time {
+                p.lunch_end_time = v;
+            }
+            if let Some(v) = req.patch.lunch_allowed_minutes {
+                p.lunch_allowed_minutes = v;
+            }
+            if let Some(v) = req.patch.explanation_deadline_hours {
+                p.explanation_deadline_hours = v;
+            }
+            if let Some(v) = req.patch.can_track_time {
+                p.can_track_time = v;
+            }
+            Ok(p)
+        }
+        .boxed()
+    }
+
+    fn create_explanation_type<'a>(
+        &'a self,
+        req: CreateExplanationTypeRequest,
+    ) -> BoxFuture<'a, Result<ExplanationType>> {
+        async move {
+            // Mock: code 는 서버 자동 생성 — 임의 형식 echo.
+            Ok(ExplanationType {
+                exptype_sid: Some(9999),
+                code: format!("CUSTOM_MOCK_{}", req.cmpsid),
+                label: req.label,
+                sort_order: req.sort_order,
+                icon: req.icon,
+                requires_text: req.requires_text,
+                is_system: false,
+                is_protected: false,
+            })
+        }
+        .boxed()
+    }
+
+    fn update_explanation_type<'a>(
+        &'a self,
+        sid: i64,
+        req: PatchExplanationTypeRequest,
+    ) -> BoxFuture<'a, Result<ExplanationType>> {
+        async move {
+            // Mock: 변경된 필드만 반영, 나머지는 임의 시드.
+            Ok(ExplanationType {
+                exptype_sid: Some(sid),
+                code: "MOCK".to_string(),
+                label: req.label.unwrap_or_else(|| "Mock 사유".to_string()),
+                sort_order: req.sort_order.unwrap_or(999),
+                icon: req.icon,
+                requires_text: req.requires_text.unwrap_or(false),
+                is_system: false,
+                is_protected: false,
+            })
+        }
+        .boxed()
+    }
+
+    fn deactivate_explanation_type<'a>(
+        &'a self,
+        _sid: i64,
+        _req: DeactivateExplanationTypeRequest,
+    ) -> BoxFuture<'a, Result<()>> {
+        async move { Ok(()) }.boxed()
+    }
+
+    fn get_explanation_usage<'a>(
+        &'a self,
+        _requester_emp_sid: i64,
+        _days: u32,
+    ) -> BoxFuture<'a, Result<Vec<ExplanationUsageEntry>>> {
+        async move {
+            Ok(vec![
+                ExplanationUsageEntry {
+                    code: "MEETING".to_string(),
+                    label: "회의".to_string(),
+                    count: 23,
+                    distinct_users: 7,
+                },
+                ExplanationUsageEntry {
+                    code: "OTHER_WORK".to_string(),
+                    label: "기타 업무".to_string(),
+                    count: 12,
+                    distinct_users: 5,
+                },
+            ])
+        }
+        .boxed()
+    }
+
+    fn list_explanation_types<'a>(
+        &'a self,
+        _emp_sid: i64,
+    ) -> BoxFuture<'a, Result<ExplanationTypesResponse>> {
+        async move {
+            // 서버 워커 GET 응답에는 SID 가 포함됨(2026-05-12). mock 도 1부터 enumerate 채워
+            // CMS 비활성화 UI 가 표시·전송할 수 있게 한다.
+            let types = crate::domain::service::explanation_type_service::system_default_types()
+                .into_iter()
+                .enumerate()
+                .map(|(i, mut t)| {
+                    t.exptype_sid = Some((i as i64) + 1);
+                    t
+                })
+                .collect();
+            Ok(ExplanationTypesResponse {
+                scope: "COMPANY".to_string(),
+                scope_keys: ExplanationScopeKeys {
+                    cmpsid: 11402,
+                    ttmsid: Some(3221),
+                    temsid: Some(9869),
+                },
+                types,
+                version: 1_736_654_321,
+                seeded: true,
             })
         }
         .boxed()

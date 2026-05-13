@@ -8,7 +8,7 @@
 | `local_events` | 서버 전송 대기 이벤트 큐 (PENDING/SUCCESS/FAILED) | ❌ **오프라인 큐잉 핵심 — 옮기면 오프라인 동작 X** |
 | `idle_segments` | 자리비움/잠금/PC종료 구간 | ❌ **오프라인 큐잉 핵심** — 네트워크 끊긴 동안 발생한 구간 보관 |
 | `explanations` | 사용자 입력 소명 | ❌ **오프라인 큐잉** — 제출 실패 시 재시도 대상 |
-| `settings` | 단순 KV 캐시 (last_heartbeat_at 등) | ✅ 가능 — read-only 정책 캐시 정도 |
+| `settings` | 단순 KV 캐시 (device_id 등) | ✅ 가능 — read-only 정책 캐시 정도 |
 
 ## 옮길 때 결정해야 하는 것
 

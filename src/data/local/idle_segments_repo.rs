@@ -186,6 +186,25 @@ pub fn list_pending_for_employee(db: &Database, employee_id: &str) -> Result<Vec
     Ok(rows)
 }
 
+/// 근로자의 모든 자리비움 구간 (status 무관). 최신순, 최대 500건.
+/// 소명 내역 화면에서 탭 필터(전체/소명필요/검토중/승인완료) 용도.
+pub fn list_all_for_employee(db: &Database, employee_id: &str) -> Result<Vec<IdleSegment>> {
+    let conn = db.lock();
+    let mut stmt = conn.prepare(
+        "SELECT id, segment_id, company_id, employee_id, device_id, work_date, segment_type,
+                start_time, end_time, duration_seconds, applied_idle_threshold_seconds,
+                policy_scope, explanation_required, explanation_deadline, explanation_status
+         FROM idle_segments
+         WHERE employee_id = ?1
+         ORDER BY start_time DESC
+         LIMIT 500",
+    )?;
+    let rows = stmt
+        .query_map([employee_id], map_segment)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 /// 특정 날짜의 모든 segment (status 무관). 상태 화면 타임라인 그릴 때 사용.
 pub fn list_for_date(db: &Database, employee_id: &str, date: NaiveDate) -> Result<Vec<IdleSegment>> {
     let conn = db.lock();

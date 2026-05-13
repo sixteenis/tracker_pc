@@ -72,6 +72,22 @@ impl Database {
     pub fn migrate(&self) -> Result<()> {
         let conn = self.lock();
         conn.execute_batch(MIGRATION_0001).context("마이그레이션 실패")?;
+        // 기존 DB 호환: `explanations.other_type_label` 컬럼 추가 (없을 때만).
+        // 정식 마이그레이션 도구 도입 전까지 ad-hoc 처리.
+        ensure_column(&conn, "explanations", "other_type_label", "TEXT")?;
         Ok(())
     }
+}
+
+/// 테이블에 컬럼이 없으면 ALTER 로 추가. 있으면 no-op (멱등).
+fn ensure_column(conn: &Connection, table: &str, column: &str, col_type: &str) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let exists = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .filter_map(Result::ok)
+        .any(|name| name == column);
+    if !exists {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {col_type}"))?;
+    }
+    Ok(())
 }

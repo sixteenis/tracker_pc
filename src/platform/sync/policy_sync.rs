@@ -33,7 +33,7 @@ pub async fn run(state: Arc<AppState>) {
             None => continue,
         };
 
-        match state.api.get_policy().await {
+        match state.api.get_policy(session.employee_id).await {
             Ok(p) => {
                 let prev_version = state.snapshot_policy().policy_version;
                 if p.policy_version != prev_version {

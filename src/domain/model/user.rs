@@ -15,6 +15,8 @@ pub struct User {
     pub company_id: i64,
     /// 팀 고유 ID — 서버 `temsid`. 미배정이면 None.
     pub team_id: Option<i64>,
+    /// 팀 템플릿 ID — 서버 `ttmsid`. get_main2 호출에 필요. 0 이면 미배정.
+    pub team_template_id: i64,
 
     // ── DB / SQL 호환을 위한 String ID (`employee_id.to_string()` 캐시) ──
     /// 로컬 DB 컬럼이 TEXT 라 그대로 비교가 가능하도록 보관. SQL 외 사용 비추천.

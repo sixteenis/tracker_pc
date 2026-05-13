@@ -16,13 +16,13 @@
 //   - `orange_header()` 서브페이지 공용 헤더 패널
 //   - 한글 폰트 자동 등록 (Windows 맑은고딕 / macOS AppleSDGothicNeo / Linux NotoSansCJK)
 //
-// TODO(2차): UI repaint 가 1초 주기 폴링. tokio watch 채널을 두고 idle/heartbeat
+// TODO(2차): UI repaint 가 1초 주기 폴링. tokio watch 채널을 두고 idle / 동기화
 // 이벤트 시점에만 `ctx.request_repaint()` 부르는 게 더 효율적.
 // TODO(2차): 다크 모드 지원 — 현재 light visuals 고정.
 
 mod disabled_view;
 mod explanation_input_view;
-mod explanation_list_view;
+pub mod explanation_list_view;
 mod login_view;
 pub mod settings_view;
 mod status_view;
@@ -66,6 +66,7 @@ pub struct PinpleApp {
     last_toast_at: Option<chrono::DateTime<chrono::Utc>>,
     settings_tab: settings_view::SettingsTab,
     settings_ui: settings_view::SettingsUi,
+    explanation_filter: explanation_list_view::ExplanationFilter,
     /// 트레이 아이콘 핸들. 드롭되면 트레이에서 사라지므로 보관.
     /// 초기화 실패 시 `None` — 그래도 앱은 정상 동작 (창 닫으면 그냥 종료).
     tray: Option<tray::TrayHandle>,
@@ -78,8 +79,9 @@ impl PinpleApp {
         install_korean_font(&cc.egui_ctx);
         setup_visuals(&cc.egui_ctx);
 
+        let login_form = login_view::LoginForm::default();
         let initial_route = if state.is_logged_in() {
-            if state.can_track_time() { Route::Status } else { Route::Disabled }
+            Route::Status
         } else {
             kick_auto_login(state.clone());
             Route::Login
@@ -101,11 +103,12 @@ impl PinpleApp {
         Self {
             state,
             route: initial_route,
-            login_form: login_view::LoginForm::default(),
+            login_form,
             explanation_form: explanation_input_view::ExplanationForm::default(),
             last_toast_at: None,
             settings_tab: settings_view::SettingsTab::General,
             settings_ui: settings_view::SettingsUi::default(),
+            explanation_filter: explanation_list_view::ExplanationFilter::default(),
             tray,
             really_quit: false,
         }
@@ -166,7 +169,8 @@ impl App for PinpleApp {
         }
 
         if matches!(self.route, Route::Login) && self.state.is_logged_in() {
-            self.route = if self.state.can_track_time() { Route::Status } else { Route::Disabled };
+            // PIN+ 미사용도 메인 화면 진입 — 헤더 배지에서 안내한다.
+            self.route = Route::Status;
         }
 
         match self.route.clone() {
@@ -174,7 +178,13 @@ impl App for PinpleApp {
                 status_view::show(ctx, &self.state, &mut self.route);
             }
             Route::ExplanationList => {
-                explanation_list_view::show(ctx, &self.state, &mut self.route, &mut self.last_toast_at);
+                explanation_list_view::show(
+                    ctx,
+                    &self.state,
+                    &mut self.route,
+                    &mut self.last_toast_at,
+                    &mut self.explanation_filter,
+                );
             }
             Route::ExplanationInput { segment_id } => {
                 explanation_input_view::show(ctx, &self.state, &segment_id, &mut self.explanation_form, &mut self.route);
@@ -277,12 +287,15 @@ fn setup_visuals(ctx: &egui::Context) {
 }
 
 /// 앱 시작 직후 한 번 호출 — 백그라운드에서 자동로그인 시도.
+/// PIN+ 미사용은 `subscription_service` 에 false 가 저장되며, 메인 화면 팝업이
+/// 사용자에게 안내 — 본 함수에서 별도 처리 불필요.
 fn kick_auto_login(state: Arc<AppState>) {
+    use crate::domain::usecase::user_usecase;
     let runtime = state.runtime.clone();
     runtime.spawn(async move {
-        match crate::domain::service::user_service::try_auto_login(&state).await {
-            Ok(true) => info!("자동로그인 성공"),
-            Ok(false) => info!("자동로그인 대상 없음"),
+        match user_usecase::auto_login(&state).await {
+            Ok(Some(_)) => info!("자동로그인 성공"),
+            Ok(None) => info!("자동로그인 대상 없음"),
             Err(e) => tracing::warn!(error = %e, "자동로그인 처리 실패"),
         }
     });

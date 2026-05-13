@@ -15,7 +15,5 @@ pub fn mock_policy() -> Policy {
         lunch_allowed_minutes: 60,
         explanation_deadline_hours: 48,
         can_track_time: true,
-        heartbeat_interval_seconds: 180,
-        event_batch_interval_seconds: 60,
     }
 }

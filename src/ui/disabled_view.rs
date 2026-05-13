@@ -29,7 +29,11 @@ pub fn ui(ui: &mut egui::Ui, state: &Arc<AppState>, route: &mut Route) {
                 *route = Route::Settings;
             }
             if ui.button("로그아웃").clicked() {
-                let _ = crate::domain::service::user_service::logout(state);
+                let _ = crate::domain::service::user_service::logout(
+                    state,
+                    crate::domain::service::user_service::LogoutReason::UserAction,
+                );
+                crate::ui::explanation_list_view::clear_cache();
                 *route = Route::Login;
             }
         } else if ui.button("로그인 화면으로").clicked() {

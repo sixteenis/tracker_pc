@@ -46,7 +46,10 @@ pub struct AppConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ApiConfig {
+    /// V1 (Resin/JSP) 서버. 로그인 / 요금제 확인 / 메인 정보 3개 엔드포인트가 사용.
     pub base_url: String,
+    /// V2 (Node.js) 서버. PC Agent 신규 엔드포인트(정책/이벤트/하트비트 등) 가 사용.
+    pub base_url_v2: String,
     pub timeout_seconds: u64,
     pub mock_mode: bool,
 }
@@ -60,8 +63,6 @@ pub struct AppMeta {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Intervals {
     pub idle_check_interval_seconds: u64,
-    pub heartbeat_interval_seconds: u64,
-    pub event_batch_interval_seconds: u64,
     pub policy_check_interval_seconds: u64,
     pub update_check_interval_seconds: u64,
     pub max_events_per_batch: u32,
@@ -99,6 +100,9 @@ impl AppConfig {
 
         if let Ok(v) = std::env::var("PINPLE_API_BASE_URL") {
             cfg.api.base_url = v;
+        }
+        if let Ok(v) = std::env::var("PINPLE_API_BASE_URL_V2") {
+            cfg.api.base_url_v2 = v;
         }
         if let Ok(v) = std::env::var("PINPLE_MOCK_MODE") {
             cfg.api.mock_mode = matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes");

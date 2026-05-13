@@ -14,6 +14,10 @@
 
 pub mod attendance_service;
 pub mod company_service;
+pub mod explanation_type_service;
+pub mod main_info_service;
 pub mod policy_service;
+pub mod subscription_service;
 pub mod team_service;
 pub mod user_service;
+pub mod work_status_service;

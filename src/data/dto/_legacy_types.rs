@@ -72,9 +72,6 @@ pub struct PolicySnapshot {
 
     pub explanation_deadline_hours: u32,
 
-    pub heartbeat_interval_seconds: u64,
-    pub event_batch_interval_seconds: u64,
-
     pub can_track_time: bool,
 }
 
@@ -92,8 +89,6 @@ impl PolicySnapshot {
             lunch_end_time: defaults.default_lunch_end_time.clone(),
             lunch_allowed_minutes: defaults.default_lunch_allowed_minutes,
             explanation_deadline_hours: defaults.default_explanation_deadline_hours,
-            heartbeat_interval_seconds: 180,
-            event_batch_interval_seconds: 60,
             can_track_time: false,
         }
     }
@@ -116,36 +111,6 @@ pub struct UpdateInfo {
     pub force_update: bool,
     pub download_url: String,
     pub release_note: String,
-}
-
-// ───────────────────────── 4. Heartbeat ─────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HeartbeatRequest {
-    pub company_id: String,
-    pub employee_id: String,
-    pub device_id: String,
-    pub device_name: String,
-    pub app_version: String,
-
-    pub pc_status: String,
-    pub last_activity_at: DateTime<Utc>,
-    pub idle_seconds: u64,
-    pub is_locked: bool,
-
-    pub attendance_status: AttendanceStatus,
-    pub can_track_time: bool,
-    pub effective_idle_threshold_seconds: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HeartbeatResponse {
-    pub next_heartbeat_seconds: u64,
-    pub policy_version: i64,
-    pub can_track_time: bool,
-    /// 서버에서 강제 로그아웃을 알리고 싶을 때 사용.
-    #[serde(default)]
-    pub force_logout: bool,
 }
 
 // ───────────────────────── 5. Events batch ─────────────────────────
@@ -177,22 +142,56 @@ pub struct EventsBatchResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteExplanation {
     pub segment_id: String,
+    #[serde(default)]
     pub work_date: String,
-    pub start_time: DateTime<Utc>,
-    pub end_time: DateTime<Utc>,
-    pub duration_seconds: i64,
+    /// 진행 중(open) segment 는 서버 응답에서 null 일 수 있음 → Option.
+    /// 명세 [[T-20260512-04_소명내역_응답값_명세_전달]] §2.3: start_time NOT NULL 이지만
+    /// fault-tolerant 위해 Option 유지.
+    #[serde(default)]
+    pub start_time: Option<DateTime<Utc>>,
+    /// 진행 중(open) segment 는 NULL. 명세 §2.3: NULL 허용.
+    #[serde(default)]
+    pub end_time: Option<DateTime<Utc>>,
+    /// 진행 중(open) segment 는 NULL (명세 §2.3 — NULL 허용).
+    /// 28KB 응답 안에 한 row 라도 `null` 이면 전체 파싱 실패하던 사고가
+    /// 2026-05-12 발생 → Option 으로 fault-tolerant 처리.
+    #[serde(default)]
+    pub duration_seconds: Option<i64>,
+    #[serde(default)]
     pub segment_type: String,
+    #[serde(default)]
     pub applied_idle_threshold_seconds: i64,
+    #[serde(default)]
     pub explanation_deadline: Option<DateTime<Utc>>,
+    #[serde(default)]
     pub explanation_status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExplanationSubmit {
+    /// 근로자 EMPSID. 서버가 segment 소유자 검증에 사용.
+    pub employee_id: String,
+    /// 회사 CMPSID — 서버에 segment 가 없을 때 upsert 용.
+    pub company_id: String,
+    /// 디바이스 UUID — segment upsert 용.
+    pub device_id: String,
     pub segment_id: String,
     pub explanation_type: String,
     pub explanation_text: Option<String>,
+    /// `explanation_type == "OTHER"` (기타) 일 때 사용자가 직접 입력한 유형명 (1~50자).
+    /// 다른 사유에서는 None — 서버가 무시(NULL 저장).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other_type_label: Option<String>,
     pub submitted_from: String, // "PC_APP"
+
+    // segment 메타 — 서버에 같은 segment_id 가 없으면 이 정보로 즉시 upsert.
+    pub work_date: String, // "YYYY-MM-DD"
+    pub segment_type: String, // PC_IDLE / PC_LOCKED / ...
+    pub start_time: DateTime<Utc>,
+    pub end_time: Option<DateTime<Utc>>,
+    pub duration_seconds: Option<i64>,
+    pub applied_idle_threshold_seconds: i64,
+    pub policy_scope: String, // COMPANY / TEAM / EMPLOYEE / DEFAULT
 }
 
 // ───────────────────────── 7. Attendance ─────────────────────────
@@ -204,70 +203,7 @@ pub struct AttendanceSnapshot {
     pub work_end_at: Option<DateTime<Utc>>,
 }
 
-// ───────────────────────── 8. 소명 사유 코드 ─────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExplanationType {
-    Meeting,
-    PhoneCall,
-    CustomerResponse,
-    BusinessTrip,
-    OutsideWork,
-    Education,
-    WorkWaiting,
-    PcError,
-    AppError,
-    OtherWork,
-    LunchBreak,
-    Personal,
-}
-
-impl ExplanationType {
-    pub const ALL: &'static [Self] = &[
-        Self::Meeting,
-        Self::PhoneCall,
-        Self::CustomerResponse,
-        Self::BusinessTrip,
-        Self::OutsideWork,
-        Self::Education,
-        Self::WorkWaiting,
-        Self::PcError,
-        Self::AppError,
-        Self::OtherWork,
-        Self::LunchBreak,
-        Self::Personal,
-    ];
-
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::Meeting => "MEETING",
-            Self::PhoneCall => "PHONE_CALL",
-            Self::CustomerResponse => "CUSTOMER_RESPONSE",
-            Self::BusinessTrip => "BUSINESS_TRIP",
-            Self::OutsideWork => "OUTSIDE_WORK",
-            Self::Education => "EDUCATION",
-            Self::WorkWaiting => "WORK_WAITING",
-            Self::PcError => "PC_ERROR",
-            Self::AppError => "APP_ERROR",
-            Self::OtherWork => "OTHER_WORK",
-            Self::LunchBreak => "LUNCH_BREAK",
-            Self::Personal => "PERSONAL",
-        }
-    }
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Meeting => "회의",
-            Self::PhoneCall => "전화 상담",
-            Self::CustomerResponse => "고객 응대",
-            Self::BusinessTrip => "출장",
-            Self::OutsideWork => "외근",
-            Self::Education => "교육",
-            Self::WorkWaiting => "업무 지시 대기",
-            Self::PcError => "PC 오류",
-            Self::AppError => "앱 오류",
-            Self::OtherWork => "기타 업무",
-            Self::LunchBreak => "점심/휴게",
-            Self::Personal => "개인 용무",
-        }
-    }
-}
+// 소명 사유 코드 — 2026-05-12 회사 커스텀(Phase 1.b) 전환으로 enum 폐기.
+// 신규 동적 구조체는 `data::dto::explanation_type_dto::ExplanationType`,
+// 오프라인 fallback / 시스템 기본 12개는
+// `domain::service::explanation_type_service::system_default_types()`.

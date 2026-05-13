@@ -65,8 +65,6 @@ mod tests {
             lunch_end_time: "14:00".to_string(),
             lunch_allowed_minutes: 60,
             explanation_deadline_hours: 48,
-            heartbeat_interval_seconds: 180,
-            event_batch_interval_seconds: 60,
             can_track_time: true,
         }
     }

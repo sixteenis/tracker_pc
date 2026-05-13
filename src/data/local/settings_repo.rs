@@ -4,7 +4,6 @@
 //!
 //! 사용처:
 //!   - `device_id`, `device_name` (기기 식별)
-//!   - `last_heartbeat_at` (앱 비정상 종료 시 NO_PC_RECORD 계산 기준)
 //!
 //! 가벼운 메타데이터만 들어가야 하며, 큰 데이터(이벤트/segment) 는 전용 테이블 사용.
 //!

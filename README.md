@@ -94,7 +94,7 @@ Filename: "{app}\pinple_pc_agent.exe"; Description: "핀플 PC 시작"; Flags: n
 ## 2. 프로젝트 구조
 
 ```
-rust_test/
+pinple_pc_agent/
 ├── Cargo.toml                     # 의존성 / 빌드 설정
 ├── config/default.toml            # 기본 설정 (인터벌, 정책 fallback 등)
 ├── migrations/0001_init.sql       # SQLite 스키마 5개 테이블

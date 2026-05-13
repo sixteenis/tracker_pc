@@ -13,10 +13,10 @@
 | 단계 | 입력 | 기대 결과 |
 |------|------|-----------|
 | 1 | 앱 실행 | 로그인 화면 노출, 한글 폰트 적용 |
-| 2 | 아이디/비번 입력 후 "로그인" | 상태 화면으로 전환, 출근 상태 / 정책 / can_track_time 표시 |
-| 3 | "자동로그인" 체크 후 로그인 | OS Credential Store 에 refresh_token 저장 (macOS Keychain Access 에서 `io.pinple.pcagent` 항목 확인 가능) |
-| 4 | 앱 재시작 | 로그인 화면을 거치지 않고 자동로그인 → 상태 화면 |
-| 5 | "로그아웃" 버튼 | refresh_token 제거, `auth` 테이블 비워짐, 로그인 화면으로 |
+| 2 | 아이디/비번 입력 후 "로그인" | (a) V1 `/android/check_mbr.jsp` 호출 성공 → (b) 즉시 `GET /api/pc-agent/user-info?emp_sid=` 호출 → (c) 응답의 user/subscription/attendance 로 상태 화면 채움 |
+| 3 | "자동로그인" 체크 후 로그인 | OS Credential Store 에 이메일+비밀번호 SHA1 저장 (macOS Keychain Access 에서 `io.pinple.pcagent` 항목 확인 가능) |
+| 4 | 앱 재시작 | 로그인 화면을 거치지 않고 자동로그인 → user-info 1회 호출 → 상태 화면 |
+| 5 | "로그아웃" 버튼 | 자격증명 제거, `auth` 테이블 비워짐, 로그인 화면으로 |
 
 **검증 SQL** — 비밀번호가 절대 저장되지 않는지 확인:
 
@@ -27,13 +27,18 @@ sqlite3 "$(...)" ".schema"  # auth 테이블에 password 컬럼 없는지
 
 ---
 
-## TS-02. 요금제 미포함 (`can_track_time = false`)
+## TS-02. 요금제 미포함 (`check_pay_use.pinpluse = false`)
+
+요금제 권한의 **단일 결정자는 V1 `check_pay_use.jsp` 응답의 `pinpluse`** 다.
+(`heartbeat` 응답의 `can_track_time`, `user-info` 응답의 `subscription.can_track_time`
+은 deprecated — 참고용으로만 사용. §api.md 부록 B)
 
 | 단계 | 조건 | 기대 결과 |
 |------|------|-----------|
-| 1 | Mock 응답을 `can_track_time = false` 로 임시 수정 (`src/api/mock.rs::fake_policy`) | 로그인은 성공하지만 즉시 `Disabled` 화면 노출 |
+| 1 | Mock 응답을 `pinpluse = false` 로 임시 수정 (`src/api/mock.rs::check_pay_use`) | 로그인은 성공하지만 즉시 `Disabled` 화면 노출 |
 | 2 | idle 감지 / heartbeat 전송 | 백그라운드 로그에 `heartbeat skip`, idle segment 미생성 |
 | 3 | 화면 문구 | "PC 근무활동 기록 기능이 비활성화되어 있습니다 …" |
+| 4 | 로그인 후 1시간 / 5분 뒤 (TS-13 폴링 시점) 에 `check_pay_use` 가 자동 재호출되어 `pinpluse=true` 로 변하면 | Disabled 화면 해제 → 정상 동작 재개 |
 
 ---
 
@@ -155,14 +160,18 @@ Ok(UpdateInfo {
 
 ## TS-10. 출근 상태 변화 (스마트폰 앱 시뮬)
 
-Mock 모드에서 `attendance_sync` 가 항상 `WORKING` 을 반환하므로,
-실서버 모드에서 출근 상태를 `BEFORE_WORK` 등으로 바꾸어 5분 대기.
+스마트폰 출퇴근 앱이 `Commute` / `PCAGT_ATTENDANCE_SNAPSHOT` 을 갱신하면
+PC Agent 의 `user-info` 폴링 (TS-13) 이 변화를 감지한다.
 
-| `attendance_status` | 기대 동작 |
-|---------------------|-----------|
-| `WORKING` | idle 감지 ON |
-| `BEFORE_WORK` / `AFTER_WORK` / `OUTING` / `LEAVE` / `BUSINESS_TRIP` | idle 감지 OFF (segment 생성 안함) |
-| `UNKNOWN` | idle 감지 ON (안전 기본값) |
+| `attendance_status` | idle 감지 | 다음 폴링 주기 |
+|---------------------|-----------|-----------------|
+| `WORKING` | ON | **3600 초 (1시간)** |
+| `BEFORE_WORK` | OFF | **300 초 (5분)** |
+| `AFTER_WORK` | OFF | **300 초 (5분)** |
+| `OUTING` | OFF | **300 초 (5분)** |
+| `LEAVE` | OFF | **300 초 (5분)** |
+| `BUSINESS_TRIP` | OFF | **300 초 (5분)** |
+| `UNKNOWN` | ON (안전 기본값) | **300 초 (5분)** |
 
 ---
 
@@ -187,6 +196,51 @@ Mock 모드에서 `attendance_sync` 가 항상 `WORKING` 을 반환하므로,
 | `refresh_token` OS Credential Store 사용 | macOS: Keychain Access → `io.pinple.pcagent` / Windows: `cmdkey /list` |
 | 키/마우스 내용이 서버 페이로드에 포함되지 않음 | `payload_json` 필드를 무작위 추출해서 키 입력 텍스트가 들어있지 않은지 확인 |
 | 화면 캡처 / 프로세스 목록 / URL 미수집 | 의존성 트리(`cargo tree`)에 `screenshots`, `sysinfo` 등 관련 크레이트 없음 |
+
+---
+
+## TS-13. user-info 적응형 폴링 (1시간 / 5분)
+
+**시나리오 A — 출근 중 1시간 주기**
+
+| 단계 | 조작 | 기대 결과 |
+|------|------|-----------|
+| 1 | 로그인 + 출근 상태 `WORKING` 으로 진입 | 첫 user-info 응답: `next_poll_seconds = 3600` |
+| 2 | 30분 대기 | 다음 polling 발생 안 함 (60분 대기 중) |
+| 3 | 60분 대기 | user-info 자동 재호출 → 화면 정보 갱신 |
+
+**시나리오 B — 출근 외 상태 5분 주기**
+
+| 단계 | 조작 | 기대 결과 |
+|------|------|-----------|
+| 1 | 로그인 + 출근 전 (`BEFORE_WORK`) 상태 | 첫 user-info 응답: `next_poll_seconds = 300` |
+| 2 | 5분 대기 | user-info 자동 재호출 |
+| 3 | 다른 디바이스에서 출근 처리 (`Commute` INSERT) | 다음 5분 폴링에서 `WORKING` 감지 → idle 감지 ON 으로 전환 → 그 다음 응답부터 1시간 주기로 늘어남 |
+
+**시나리오 C — 요금제 만료 감지**
+
+> 요금제 권한은 V1 `check_pay_use.jsp` 의 `pinpluse` 만 따른다.
+> user-info 폴링 시점에 같이 호출.
+
+| 단계 | 조작 | 기대 결과 |
+|------|------|-----------|
+| 1 | 정상 로그인 (요금제 PRO) | `check_pay_use.pinpluse = true`, idle 감지 정상 |
+| 2 | 결제 만료 처리 (DB 수동) | 다음 폴링 (1h or 5min) 에서 `check_pay_use.pinpluse = false` → 즉시 §부록 B 처리 (idle/heartbeat/event 모두 skip), Disabled 화면 표시 |
+| 3 | 결제 갱신 | 다음 폴링에서 `pinpluse = true` → 추적 재개 |
+
+**시나리오 D — 퇴사자 자동 로그아웃**
+
+| 단계 | 조작 | 기대 결과 |
+|------|------|-----------|
+| 1 | 로그인된 상태 | 정상 동작 |
+| 2 | 관리자가 `Emply.LeaveDt = today` 설정 | 다음 user-info 폴링에서 404 또는 `force_logout = true` → 즉시 로그아웃 + 안내 |
+
+**검증 로그 패턴**
+```
+[api] → GET /api/pc-agent/user-info?emp_sid=48660 [get_user_info]
+[api] ← 200 ...   next_poll=3600, attendance=WORKING
+[api] → GET /api/pc-agent/user-info?emp_sid=48660 [get_user_info]  (60분 후)
+```
 
 ---
 

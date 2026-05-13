@@ -66,8 +66,9 @@ CREATE TABLE IF NOT EXISTS explanations (
     start_time          TEXT    NOT NULL,
     end_time            TEXT    NOT NULL,
     duration_seconds    INTEGER NOT NULL,
-    explanation_type    TEXT    NOT NULL,  -- MEETING / PHONE_CALL / ... / PERSONAL
+    explanation_type    TEXT    NOT NULL,  -- MEETING / PHONE_CALL / ... / PERSONAL / OTHER
     explanation_text    TEXT,
+    other_type_label    TEXT,               -- explanation_type='OTHER' 일 때 사용자 입력 유형명 (1~50자)
     submitted_from      TEXT    NOT NULL DEFAULT 'PC_APP',
     submitted_at        TEXT    NOT NULL,
     sync_status         TEXT    NOT NULL DEFAULT 'PENDING',

@@ -7,7 +7,7 @@
 //   2) 출근 카드(흰) + 출퇴근 안내 카드(네이비, 소명 N건 진입 버튼)
 //   3) 통계 카드 2개 — 오늘 PC 사용 / 오늘 미사용 누적
 //   4) 활동 감지 타임라인 — 09:00 ~ 현재까지 시각화
-//   5) 하단 버튼 3개 — 적용된 정책 / 지금 동기화 / 오늘 기록 보기
+//   5) 하단 버튼 3개 — 적용된 정책 / 지금 동기화 / 전체 소명 내역
 //   6) 개인정보 안내 한 줄
 //
 // TODO(미구현): "지금 동기화" 버튼이 로그만 찍고 실제 동기화 트리거 안 함.
@@ -29,6 +29,10 @@ use crate::util;
 /// 메인 상태 화면 렌더링. 매 프레임 호출.
 pub fn show(ctx: &egui::Context, state: &Arc<AppState>, route: &mut Route) {
     let snapshot = state.snapshot_status();
+    // PIN+ 미사용이면 PC 상태 배지 자체를 "사용불가"(빨강) 으로 덮어쓴다.
+    let pin_plus_inactive =
+        crate::domain::service::subscription_service::current().is_some()
+            && !crate::domain::service::subscription_service::pin_plus_active();
     let session = state.session.read().unwrap().clone();
     let today = Utc::now().date_naive();
 
@@ -80,12 +84,19 @@ pub fn show(ctx: &egui::Context, state: &Arc<AppState>, route: &mut Route) {
                 });
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let (label, dot_color) = match snapshot.pc_status {
-                        PcStatus::Active => ("PC 사용 중", GREEN_STATUS),
-                        PcStatus::Idle => ("자리비움", TIMELINE_IDLE),
-                        PcStatus::Locked => ("잠금 중", GRAY_TEXT),
-                        PcStatus::Offline => ("오프라인", egui::Color32::from_rgb(200, 80, 80)),
-                        PcStatus::AppClosing => ("종료 중", egui::Color32::from_rgb(200, 80, 80)),
+                    // PIN+ 미사용이면 PC 상태와 무관하게 "사용불가" 빨강 배지로 표시.
+                    let red = egui::Color32::from_rgb(210, 50, 50);
+                    let (label, dot_color, label_color) = if pin_plus_inactive {
+                        ("사용불가", red, red)
+                    } else {
+                        let (l, d) = match snapshot.pc_status {
+                            PcStatus::Active => ("PC 사용 중", GREEN_STATUS),
+                            PcStatus::Idle => ("자리비움", TIMELINE_IDLE),
+                            PcStatus::Locked => ("잠금 중", GRAY_TEXT),
+                            PcStatus::Offline => ("오프라인", egui::Color32::from_rgb(200, 80, 80)),
+                            PcStatus::AppClosing => ("종료 중", egui::Color32::from_rgb(200, 80, 80)),
+                        };
+                        (l, d, NAVY)
                     };
                     egui::Frame::none()
                         .fill(egui::Color32::WHITE)
@@ -100,7 +111,7 @@ pub fn show(ctx: &egui::Context, state: &Arc<AppState>, route: &mut Route) {
                                 );
                                 ui.add_space(12.0);
                                 ui.label(
-                                    egui::RichText::new(label).size(13.0).color(NAVY).strong(),
+                                    egui::RichText::new(label).size(13.0).color(label_color).strong(),
                                 );
                             });
                         });
@@ -131,7 +142,14 @@ pub fn show(ctx: &egui::Context, state: &Arc<AppState>, route: &mut Route) {
                     // ── 출근/퇴근 카드 ────────────────────────────
                     let card1_w = 200.0_f32.min(content_w * 0.24);
                     let card2_w = content_w - card1_w - gap;
-                    let attendance_label = snapshot.attendance.label();
+                    // 출근 표시는 V1 `get_main2.jsp` 응답의 starttm/endtm 으로 판별
+                    // (사용자 결정 2026-05-12 — heartbeat 제거와 함께).
+                    //   - starttm 없음              → "미출근"
+                    //   - starttm 있고 endtm 없음   → "근무중"
+                    //   - 둘 다 있음                → "퇴근"
+                    // 엔진(`idle_detector`) 의 자리비움 판단은 별개로 V2 user-info 의
+                    // `attendance_status` 를 사용 (외출/연차/출장 세분 상태 구분 필요).
+                    let attendance_label = main_attendance_label();
                     let card_row_h = 68.0; // 두 카드 동일 높이
 
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
@@ -356,7 +374,7 @@ pub fn show(ctx: &egui::Context, state: &Arc<AppState>, route: &mut Route) {
                         for (label, is_filled, action) in [
                             ("⚙  적용된 정책", false, 0u8),
                             ("↻  지금 동기화", false, 1),
-                            ("오늘 기록 보기", true, 2),
+                            ("전체 소명 내역", true, 2),
                         ] {
                             let btn = if is_filled {
                                 egui::Button::new(
@@ -561,4 +579,23 @@ fn format_active(seconds: i64) -> String {
     let h = s / 3600;
     let m = (s % 3600) / 60;
     if h > 0 { format!("{h}h {m}m") } else { format!("{m}m") }
+}
+
+/// 메인화면 출근 카드 라벨 — `work_status_service` 의 통합 판별 사용 (2026-05-12 변경).
+///
+/// 판별 규칙:
+///   - `result > 0`                                  → "근무중"
+///   - `result == 0` AND starttm/endtm 비거나 "00:00" → "미출근"
+///   - `result == 0` AND (starttm 또는 endtm 값)     → "퇴근"
+///   - 응답 없음                                      → "—"
+///
+/// 진실 소스: V1 `/android/u/get_workstatus.jsp` + `main_info` 의 starttm/endtm.
+fn main_attendance_label() -> &'static str {
+    let status = crate::domain::service::work_status_service::current_status();
+    match status {
+        crate::domain::service::work_status_service::WorkStatus::WorkingNow => "근무중",
+        crate::domain::service::work_status_service::WorkStatus::NotIn => "미출근",
+        crate::domain::service::work_status_service::WorkStatus::OffWork => "퇴근",
+        crate::domain::service::work_status_service::WorkStatus::Unknown => "—",
+    }
 }

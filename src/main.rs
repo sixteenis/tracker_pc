@@ -8,7 +8,7 @@
 //!   3) SQLite 열고 마이그레이션
 //!   4) device_id / device_name 영속화 (최초 1회 UUID)
 //!   5) `AppState` 공유 상태 인스턴스 생성 (Arc)
-//!   6) 백그라운드 task 스폰 (감지/heartbeat/배치/정책/업데이트/출근)
+//!   6) 백그라운드 task 스폰 (감지/배치/정책/업데이트/유저정보)
 //!   7) eframe 메인 루프 점유 — 종료 시 함수 반환
 //!
 //! ── 설계 원칙 ───────────────────────────────────────────────────────────
@@ -42,8 +42,14 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 /// `rolling::daily` 를 사용해 `data_dir/logs/agent-YYYY-MM-DD.log` 형태로 저장하면
 /// Windows 에서도 디버깅 편의가 좋아진다.
 fn init_logging(level: &str) {
+    // 기본 필터: 자기 크레이트는 설정 level, 별도 `api` 타겟(HTTP 호출 로그)도
+    // 동일 level, 외부 의존성은 warn 이상만. `RUST_LOG=api=debug` 식으로
+    // override 하면 API 로그만 더 자세히 볼 수 있다.
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new(format!("{}={level},warn", constants::LOG_CRATE_FILTER))
+        EnvFilter::new(format!(
+            "{}={level},api={level},warn",
+            constants::LOG_CRATE_FILTER
+        ))
     });
     tracing_subscriber::registry()
         .with(filter)
@@ -60,7 +66,6 @@ fn main() -> anyhow::Result<()> {
     info!(
         default_idle_threshold_seconds = cfg.policy_defaults.default_idle_threshold_seconds,
         idle_check_interval_seconds = cfg.intervals.idle_check_interval_seconds,
-        heartbeat_interval_seconds = cfg.intervals.heartbeat_interval_seconds,
         "로드된 정책 fallback / 인터벌"
     );
 
@@ -109,7 +114,7 @@ fn main() -> anyhow::Result<()> {
     // 5. 공유 앱 상태
     let state = Arc::new(app::AppState::new(cfg.clone(), db, device, runtime.handle().clone()));
 
-    // 6. 백그라운드 작업 — 감지/heartbeat/배치/정책/업데이트
+    // 6. 백그라운드 작업 — 감지/배치/정책/업데이트/유저정보
     platform::monitor::spawn_all(state.clone());
     platform::sync::spawn_all(state.clone());
 

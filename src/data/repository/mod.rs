@@ -14,5 +14,7 @@
 pub mod attendance_repository;
 pub mod auth_repository;
 pub mod company_repository;
+pub mod main_info_repository;
 pub mod policy_repository;
+pub mod subscription_repository;
 pub mod team_repository;

@@ -13,14 +13,27 @@
 //! 자리비움 시작).
 //!
 //! ── 차단 조건 (기획서 §7, §10) ─────────────────────────────────────────
-//! - `can_track_time = false` (요금제 미포함) → 감지 skip
+//! - `subscription_service::pin_plus_active() == false` (회사 요금제 미포함)
+//!   → 마우스/키보드 입력 감지 자체를 호출하지 않음 (`input::idle_seconds()` skip).
+//!   요금제 부재 시 "기능 자체가 동작하지 않게" 한다는 기획.
+//! - `can_track_time = false` (요금제 미포함 외에도 정책 기반 차단 포함)
+//!   → 감지는 하되 segment 생성 skip
 //! - `attendance ∈ {BeforeWork, AfterWork, Outing, Leave, BusinessTrip}` → skip
 //!   (출근 전/외출/연차 등은 PC 미사용이 정상)
 //! - `attendance = Unknown` 은 안전 기본값으로 감지 진행
+//! - **`work_status_service::current_status() != WorkingNow` → skip** (2026-05-12 갱신).
+//!   V1 `/android/u/get_workstatus.jsp` `result` + `main_info.starttm/endtm` 통합 판별.
+//!   미출근 / 퇴근 / Unknown 모두 segment 만들지 않음. UI 라벨과 엔진 게이트가
+//!   동일한 진실 소스를 사용해 일관성 보장 (사용자 결정 2026-05-12).
 //!
-//! TODO(기능 미완): lunch 윈도우 분류 (`lunch::classify`) 통합. 현재 segment 가
-//! 점심 시간대 안에 있어도 일반 자리비움으로 처리됨. 점심 후보로 분리해서
-//! 자동 LUNCH_BREAK 처리 (또는 사용자에게 "점심이었나요?" 토스트) 필요.
+//! ── 점심 시간 처리 (2026-05-13, MVP) ─────────────────────────────────────
+//! V1 `get_main2.jsp.brkTime` (도메인: `MainInfo.use_break_time`) 가 true 인 회사는
+//! **로컬 12:00~13:00 자리비움을 자동으로 점심으로 간주** — segment 자체 생성 안 함.
+//!   - 게이트 1: `now` 가 12:00~13:00 윈도우 안이면 open 시도 skip
+//!   - 게이트 2: 12:00 이전 시작 idle 이 13:00 넘어가서 open 되는 경우 — `started` 를
+//!     13:00 으로 보정해 점심 시간을 segment 에서 제외
+//! `use_break_time=false` 회사는 게이트 없음 (기존 동작 그대로).
+//! 추후 회사별 윈도우/허용시간 커스텀 정책으로 확장 예정 — 현 MVP 는 고정 1시간.
 //! TODO(2차): 입력이 다시 들어왔을 때 즉시 segment close 하지 않고 grace period
 //! (예: 30초) 두기 — 잠깐 마우스 흔들고 다시 자리 비우는 패턴 무시.
 //! TODO(2차): 잠금 상태에서 입력이 발생할 수 없음. 현재는 `is_locked` 와 무관하게
@@ -29,14 +42,20 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{Datelike, Local, TimeZone, Timelike, Utc};
 use tracing::info;
 
 use crate::data::dto::AttendanceStatus;
 use crate::app::{AppState, PcStatus};
 use crate::data::local::events_repo;
 use crate::data::local::idle_segments_repo::{self, NewSegment, SegmentType};
+use crate::domain::service::{main_info_service, subscription_service};
 use crate::platform::monitor::input;
+
+/// 점심 시간 윈도우 — 고정 12:00 ~ 13:00 로컬 (MVP).
+/// `MainInfo.use_break_time == true` 회사에만 적용. 추후 회사별 커스텀 정책 도입 예정.
+const LUNCH_BREAK_START_HOUR: u32 = 12;
+const LUNCH_BREAK_END_HOUR: u32 = 13;
 
 enum IdleState {
     Active,
@@ -53,6 +72,14 @@ pub async fn run(state: Arc<AppState>) {
 
     loop {
         tokio::time::sleep(interval).await;
+
+        // ── PIN+ 미사용 회사 — 마우스/키보드 감지 자체를 차단 ────────────────
+        // 기획: 요금제 false 면 "기능 자체가 동작하지 않도록". 입력 폴링(input::idle_seconds)
+        // 호출 전에 빠르게 끊는다. subscription 응답이 아직 없으면(Option=None) 보수적으로
+        // 통과시키지 않고 다음 사이클 대기 — 로그인 흐름은 수 초 내 채워진다.
+        if !subscription_service::pin_plus_active() {
+            continue;
+        }
 
         let idle = input::idle_seconds();
         let now = Utc::now();
@@ -96,11 +123,30 @@ pub async fn run(state: Arc<AppState>) {
             continue;
         }
 
+        // V1 `/android/u/get_workstatus.jsp` 기반 통합 판별 (2026-05-12 도입).
+        // `WorkingNow` (result>0) 일 때만 segment 생성. 미출근/퇴근/Unknown 은 차단.
+        // UI 출근 카드 라벨과 동일한 진실 소스를 사용 → 사용자 체감 일관.
+        use crate::domain::service::work_status_service::{self, WorkStatus};
+        let work_status = work_status_service::current_status();
+        if !work_status.allows_tracking() {
+            // WorkingNow 외에는 모두 차단 (NotIn / OffWork / Unknown).
+            // Unknown 은 보수적으로 차단 — 정보 부족 시 segment 생성 안 함.
+            let _ = WorkStatus::WorkingNow; // unused import 방지용 참조
+            continue;
+        }
+
         match &s {
             IdleState::Active => {
                 if idle >= threshold {
+                    // 점심 시간대 (12:00~13:00 로컬, use_break_time=true 회사) — segment open skip.
+                    if is_within_lunch_break(now) {
+                        info!("점심 시간대 — segment 생성 skip");
+                        continue;
+                    }
                     // segment 시작 시각은 마지막 입력 시점 (= now - idle).
-                    let started = now - chrono::Duration::seconds(idle as i64);
+                    // 점심 시간대를 가로지른 경우 started 를 13:00 로 보정해 점심을 segment 에서 제외.
+                    let raw_started = now - chrono::Duration::seconds(idle as i64);
+                    let started = snap_started_after_lunch(raw_started);
                     if let Some(segment_id) = open_segment(&state, started, threshold, &scope) {
                         if let Ok(mut st) = state.status.write() {
                             st.pc_status = PcStatus::Idle;
@@ -202,5 +248,87 @@ fn open_segment(
 pub(crate) fn enqueue_event(state: &Arc<AppState>, event_type: &str, payload: serde_json::Value) {
     if let Err(e) = events_repo::enqueue(&state.db, event_type, Utc::now(), &payload) {
         tracing::warn!(error = %e, event_type, "이벤트 enqueue 실패");
+    }
+}
+
+/// 로컬 기준 자정 이후 초 수 (`Utc` → `Local` 변환 후 시·분·초 계산).
+fn local_seconds_in_day(utc: chrono::DateTime<Utc>) -> u32 {
+    let local = utc.with_timezone(&Local);
+    local.hour() * 3600 + local.minute() * 60 + local.second()
+}
+
+/// `use_break_time=true` 회사에 한해, 로컬 기준 시각이 점심 윈도우 안인지 판정.
+/// `use_break_time=false` 회사 또는 `MainInfo` 미수신 상태에서는 항상 false.
+fn is_within_lunch_break(utc: chrono::DateTime<Utc>) -> bool {
+    let info = match main_info_service::current() {
+        Some(m) => m,
+        None => return false,
+    };
+    if !info.use_break_time {
+        return false;
+    }
+    let s = local_seconds_in_day(utc);
+    s >= LUNCH_BREAK_START_HOUR * 3600 && s < LUNCH_BREAK_END_HOUR * 3600
+}
+
+/// `started` 가 점심 윈도우 안이면 그 날짜의 13:00 로컬 시각으로 보정한다.
+/// 12:00 이전 또는 13:00 이후는 그대로 반환. `use_break_time=false` 회사에서는 영향 없음.
+fn snap_started_after_lunch(started: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
+    let info = match main_info_service::current() {
+        Some(m) => m,
+        None => return started,
+    };
+    if !info.use_break_time {
+        return started;
+    }
+    let s = local_seconds_in_day(started);
+    if s < LUNCH_BREAK_START_HOUR * 3600 || s >= LUNCH_BREAK_END_HOUR * 3600 {
+        return started;
+    }
+    let local = started.with_timezone(&Local);
+    Local
+        .with_ymd_and_hms(local.year(), local.month(), local.day(), LUNCH_BREAK_END_HOUR, 0, 0)
+        .single()
+        .map(|d| d.with_timezone(&Utc))
+        .unwrap_or(started)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Local, TimeZone};
+
+    fn local_utc(h: u32, m: u32) -> chrono::DateTime<Utc> {
+        Local
+            .with_ymd_and_hms(2026, 5, 13, h, m, 0)
+            .single()
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn snap_keeps_when_started_before_noon() {
+        // MainInfo 캐시가 없을 때는 보정 안 함 (테스트 환경은 캐시 없음)
+        let t = local_utc(11, 30);
+        assert_eq!(snap_started_after_lunch(t), t);
+    }
+
+    #[test]
+    fn snap_keeps_when_started_after_one() {
+        let t = local_utc(13, 30);
+        assert_eq!(snap_started_after_lunch(t), t);
+    }
+
+    #[test]
+    fn lunch_gate_false_when_no_main_info_cache() {
+        // 테스트는 main_info_service::CURRENT 가 None 인 상태로 실행.
+        // use_break_time 비활성 동일 효과 — 항상 false.
+        assert!(!is_within_lunch_break(local_utc(12, 30)));
+    }
+
+    #[test]
+    fn local_seconds_in_day_basic() {
+        let t = local_utc(12, 30); // 12:30:00
+        assert_eq!(local_seconds_in_day(t), 12 * 3600 + 30 * 60);
     }
 }

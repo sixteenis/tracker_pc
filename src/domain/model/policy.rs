@@ -20,11 +20,6 @@ pub struct Policy {
     pub explanation_deadline_hours: u32,
     /// 회사/요금제 단에서 PC 시간 추적이 켜져 있는지.
     pub can_track_time: bool,
-
-    /// heartbeat 권장 주기 (초).
-    pub heartbeat_interval_seconds: u64,
-    /// 이벤트 배치 권장 주기 (초).
-    pub event_batch_interval_seconds: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
