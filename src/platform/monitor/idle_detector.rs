@@ -59,8 +59,19 @@ const LUNCH_BREAK_END_HOUR: u32 = 13;
 
 enum IdleState {
     Active,
-    IdleOpen { segment_id: String },
+    IdleOpen {
+        segment_id: String,
+        /// 처음 idle=0 으로 떨어진 시각. 즉시 close 하지 않고 grace 동안 모니터링.
+        /// 다시 idle 누적되면 None 으로 복귀(close 취소).
+        first_zero_at: Option<chrono::DateTime<Utc>>,
+    },
 }
+
+/// 입력 복귀(idle=0) 후 진짜 close 까지 대기 시간 (초).
+/// 30초 이상 입력이 유지되어야 segment 종료 확정. macOS ioreg 의 일시적 0 반환
+/// 또는 OS 짧은 깨어남 이벤트로 segment 가 쪼개지는 사고를 흡수한다.
+/// (2026-05-14: "24분 자리비움이 여러 row 로 쪼개짐" 사용자 보고 대응)
+const IDLE_CLOSE_GRACE_SECONDS: i64 = 30;
 
 /// 메인 감지 루프. 앱 종료까지 무한 반복.
 pub async fn run(state: Arc<AppState>) {
@@ -78,11 +89,13 @@ pub async fn run(state: Arc<AppState>) {
         // 호출 전에 빠르게 끊는다. subscription 응답이 아직 없으면(Option=None) 보수적으로
         // 통과시키지 않고 다음 사이클 대기 — 로그인 흐름은 수 초 내 채워진다.
         if !subscription_service::pin_plus_active() {
+            tracing::debug!("[gate ❌ pin_plus_active=false] 폴링 skip (요금제 미사용 또는 미수신)");
             continue;
         }
 
         let idle = input::idle_seconds();
         let now = Utc::now();
+        tracing::debug!(idle, "[input] OS 측정값");
 
         // status 갱신
         if let Ok(mut st) = state.status.write() {
@@ -116,10 +129,12 @@ pub async fn run(state: Arc<AppState>) {
         );
 
         if !can_track {
+            tracing::debug!("[gate ❌ can_track_time=false] segment 생성 skip (요금제·정책 차단)");
             continue;
         }
         if !attendance.enables_tracking() && attendance != AttendanceStatus::Unknown {
             // 출근 전/외출/연차 등은 PC 미사용이 정상.
+            tracing::debug!(?attendance, "[gate ❌ attendance] segment 생성 skip");
             continue;
         }
 
@@ -132,41 +147,115 @@ pub async fn run(state: Arc<AppState>) {
             // WorkingNow 외에는 모두 차단 (NotIn / OffWork / Unknown).
             // Unknown 은 보수적으로 차단 — 정보 부족 시 segment 생성 안 함.
             let _ = WorkStatus::WorkingNow; // unused import 방지용 참조
+            tracing::debug!(?work_status, "[gate ❌ work_status≠WorkingNow] segment 생성 skip");
             continue;
         }
+        tracing::trace!("[gate ✅ 모든 통과] segment 동작 가능");
 
         match &s {
             IdleState::Active => {
                 if idle >= threshold {
                     // 점심 시간대 (12:00~13:00 로컬, use_break_time=true 회사) — segment open skip.
                     if is_within_lunch_break(now) {
-                        info!("점심 시간대 — segment 생성 skip");
+                        info!(idle, threshold, "[gate ❌ lunch_window] segment 생성 skip (점심 시간대)");
                         continue;
                     }
                     // segment 시작 시각은 마지막 입력 시점 (= now - idle).
                     // 점심 시간대를 가로지른 경우 started 를 13:00 로 보정해 점심을 segment 에서 제외.
                     let raw_started = now - chrono::Duration::seconds(idle as i64);
                     let started = snap_started_after_lunch(raw_started);
+                    info!(
+                        idle, threshold, scope = %scope,
+                        started = %started.to_rfc3339(),
+                        "[state ⏵ Active→IdleOpen] 임계치 도달 — segment OPEN 시도"
+                    );
                     if let Some(segment_id) = open_segment(&state, started, threshold, &scope) {
                         if let Ok(mut st) = state.status.write() {
                             st.pc_status = PcStatus::Idle;
                         }
-                        info!(threshold, scope, "자리비움 구간 시작");
+                        info!(
+                            segment_id = %segment_id,
+                            started = %started.to_rfc3339(),
+                            threshold, scope = %scope,
+                            "✅ 자리비움 구간 시작 — 로컬 INSERT (서버 송신은 close 시점에)"
+                        );
                         segment_started_at = Some(started);
-                        s = IdleState::IdleOpen { segment_id };
+                        s = IdleState::IdleOpen { segment_id, first_zero_at: None };
+                    } else {
+                        tracing::warn!("[state ❌] segment open 실패 (세션 없음 또는 DB 오류)");
                     }
+                } else {
+                    tracing::trace!(idle, threshold, "[state Active] 임계치 미달");
                 }
             }
-            IdleState::IdleOpen { segment_id } => {
-                if idle == 0 {
-                    // 사용자가 돌아옴 — segment close.
-                    // 2026-05-14 정책: IDLE_STARTED + IDLE_ENDED 두 이벤트를 close 시점에 한 번에
-                    // enqueue 한 뒤 즉시 flush 호출. "진행 중" segment 가 서버에 INSERT 되는
-                    // 사고를 회피 + 1분 지연 없이 즉시 동기화.
-                    let _ = idle_segments_repo::close(&state.db, segment_id, now);
+            IdleState::IdleOpen { segment_id, first_zero_at } => {
+                let segment_id = segment_id.clone();
+                let first_zero_at = *first_zero_at;
 
-                    // 시작 시각 — segment_started_at 에 보관해둔 정확한 값 사용.
+                if idle > 0 {
+                    // 자리비움 계속 진행 — 직전 idle=0 fallback 있었으면 close 취소.
+                    if first_zero_at.is_some() {
+                        info!(
+                            segment_id = %segment_id, idle,
+                            "↩️ [state IdleOpen] grace 중 idle 재누적 — close 취소 (같은 segment 유지)"
+                        );
+                        s = IdleState::IdleOpen { segment_id, first_zero_at: None };
+                    } else {
+                        tracing::debug!(segment_id = %segment_id, idle, "[state IdleOpen] 자리비움 진행 중");
+                    }
+                    continue;
+                }
+
+                // idle == 0 — 입력 복귀 후보. grace 미경과면 대기.
+                match first_zero_at {
+                    None => {
+                        // 입력 복귀 첫 감지 — close 즉시 안 하고 grace 시작.
+                        info!(
+                            segment_id = %segment_id,
+                            grace = IDLE_CLOSE_GRACE_SECONDS,
+                            "⏳ [state IdleOpen] 입력 복귀 감지 — grace 대기 시작"
+                        );
+                        s = IdleState::IdleOpen { segment_id, first_zero_at: Some(now) };
+                        continue;
+                    }
+                    Some(zero_at) => {
+                        let elapsed = (now - zero_at).num_seconds();
+                        if elapsed < IDLE_CLOSE_GRACE_SECONDS {
+                            // 아직 grace 경과 안 됨 — 계속 모니터링.
+                            tracing::debug!(
+                                segment_id = %segment_id, elapsed,
+                                grace = IDLE_CLOSE_GRACE_SECONDS,
+                                "[state IdleOpen] grace 대기 중"
+                            );
+                            continue;
+                        }
+                        info!(
+                            segment_id = %segment_id, elapsed,
+                            "✅ [state IdleOpen→close] grace 경과 — close 확정"
+                        );
+                    }
+                }
+
+                {
+                    // 사용자가 돌아옴 — segment close (grace 경과 후 확정).
+                    // close 시각 = 실제 입력 복귀 시점 (zero_at), now 아님.
+                    let close_at = first_zero_at.unwrap_or(now);
                     let started = segment_started_at.unwrap_or(now);
+                    let duration_secs = (close_at - started).num_seconds().max(0);
+                    info!(
+                        segment_id = %segment_id,
+                        started = %started.to_rfc3339(),
+                        close_at = %close_at.to_rfc3339(),
+                        duration_secs,
+                        "📝 segment CLOSE — 로컬 UPDATE 시작"
+                    );
+
+                    if let Err(e) = idle_segments_repo::close(&state.db, &segment_id, close_at) {
+                        tracing::warn!(error = %e, segment_id = %segment_id, "❌ 로컬 segment close 실패");
+                    } else {
+                        tracing::debug!(segment_id = %segment_id, "로컬 segment close 완료");
+                    }
+
                     let applied_threshold = state
                         .status
                         .read()
@@ -178,6 +267,10 @@ pub async fn run(state: Arc<AppState>) {
                         .map(|st| st.policy_scope.clone())
                         .unwrap_or_default();
 
+                    info!(
+                        segment_id = %segment_id,
+                        "📤 이벤트 enqueue: IDLE_STARTED + IDLE_ENDED (PENDING)"
+                    );
                     enqueue_event(
                         &state,
                         "IDLE_STARTED",
@@ -193,17 +286,21 @@ pub async fn run(state: Arc<AppState>) {
                         "IDLE_ENDED",
                         serde_json::json!({
                             "segment_id": segment_id,
-                            "ended_at": now.to_rfc3339(),
+                            "ended_at": close_at.to_rfc3339(),
                         }),
                     );
 
                     // 즉시 송신 시도. 성공 시 끝, 실패 시 1분 주기 재시도.
+                    info!(segment_id = %segment_id, "🚀 flush_now 호출 — 서버 즉시 송신 시도");
                     crate::platform::sync::event_sync::flush_now(state.clone());
 
                     if let Ok(mut st) = state.status.write() {
                         st.pc_status = PcStatus::Active;
                     }
-                    info!(segment_id, "자리비움 구간 종료 — 즉시 송신 시도");
+                    info!(
+                        segment_id = %segment_id, duration_secs,
+                        "✅ [state IdleOpen→Active] 자리비움 구간 종료 (즉시 송신 spawn 완료)"
+                    );
 
                     // 자리비움이 의미 있는 길이로 끝났을 때 토스트로 알림 (백그라운드 thread).
                     // 사용자가 창을 숨겨놓고 일했더라도 트레이/알림센터로 안내됨.
@@ -220,8 +317,6 @@ pub async fn run(state: Arc<AppState>) {
                     }
                     segment_started_at = None;
                     s = IdleState::Active;
-                } else {
-                    info!(segment_id, idle, "자리비움 진행 중");
                 }
             }
         }
@@ -274,8 +369,13 @@ fn open_segment(
 /// 의미 이벤트를 `local_events` 큐에 추가. 실패 시 warn 로그만 (UI 차단 안 함).
 /// 실제 서버 전송은 `sync::event_sync` 가 1분 주기로 처리.
 pub(crate) fn enqueue_event(state: &Arc<AppState>, event_type: &str, payload: serde_json::Value) {
-    if let Err(e) = events_repo::enqueue(&state.db, event_type, Utc::now(), &payload) {
-        tracing::warn!(error = %e, event_type, "이벤트 enqueue 실패");
+    let payload_preview = payload.to_string();
+    match events_repo::enqueue(&state.db, event_type, Utc::now(), &payload) {
+        Ok(event_id) => tracing::info!(
+            event_type, event_id = %event_id, payload = %payload_preview,
+            "💾 enqueue OK (local_events PENDING)"
+        ),
+        Err(e) => tracing::warn!(error = %e, event_type, "❌ enqueue 실패"),
     }
 }
 

@@ -59,6 +59,7 @@ pub async fn run(state: Arc<AppState>) {
 /// `local_events` PENDING/FAILED 가 있으면 한 사이클을 비동기로 한 번 돌린다.
 /// 1분 루프와 별도로 동작 — 중복 호출돼도 멱등 (서버가 event_id UNIQUE).
 pub fn flush_now(state: Arc<AppState>) {
+    tracing::info!("⚡ flush_now spawn — 즉시 송신 사이클 시작 (비동기)");
     state.runtime.clone().spawn(async move {
         flush_once(&state).await;
     });
@@ -71,17 +72,21 @@ async fn flush_once(state: &Arc<AppState>) {
     let maybe_session = state.session.read().unwrap().clone();
     let session = match maybe_session {
         Some(s) => s,
-        None => return,
+        None => {
+            tracing::debug!("[event_sync flush_once] session 없음 — skip");
+            return;
+        }
     };
 
     let pending = match events_repo::pending_batch(&state.db, limit) {
         Ok(p) => p,
         Err(e) => {
-            warn!(error = %e, "PENDING 이벤트 조회 실패");
+            warn!(error = %e, "❌ PENDING 이벤트 조회 실패");
             return;
         }
     };
     if pending.is_empty() {
+        tracing::debug!("[event_sync flush_once] PENDING 0건 — skip");
         return;
     }
 
@@ -97,6 +102,18 @@ async fn flush_once(state: &Arc<AppState>) {
         })
         .collect();
 
+    // 이벤트 분포 로그 — 어떤 이벤트가 몇 건 들어가는지
+    let mut type_counts = std::collections::BTreeMap::<&str, usize>::new();
+    for e in &entries {
+        *type_counts.entry(e.event_type.as_str()).or_insert(0) += 1;
+    }
+    let dist = type_counts
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, v))
+        .collect::<Vec<_>>()
+        .join(", ");
+    info!(total = entries.len(), %dist, "📨 [event_sync] 배치 송신 시작");
+
     let has_segment_event = entries.iter().any(|e| {
         matches!(e.event_type.as_str(), "IDLE_STARTED" | "IDLE_ENDED" | "NO_PC_RECORD")
     });
@@ -111,14 +128,24 @@ async fn flush_once(state: &Arc<AppState>) {
     match state.api.send_events(batch).await {
         Ok(resp) => {
             let count = resp.accepted_event_ids.len();
+            let total = event_ids.len();
             let accepted_any = !resp.accepted_event_ids.is_empty();
+            let rejected = total.saturating_sub(count);
             let _ = events_repo::mark_success(&state.db, &resp.accepted_event_ids);
             if let Ok(mut s) = state.status.write() {
                 s.last_event_sync_at = Some(Utc::now());
             }
-            info!(count, "이벤트 배치 전송 성공");
+            if rejected > 0 {
+                warn!(
+                    accepted = count, rejected, total,
+                    "⚠️ 일부 이벤트 거부됨 (CHECK constraint 위반 가능) — 서버 로그 확인 필요"
+                );
+            } else {
+                info!(accepted = count, "✅ [event_sync] 배치 송신 성공 — mark_success 완료");
+            }
 
             if has_segment_event && accepted_any {
+                info!("🔄 segment 영향 이벤트 송신됨 — 소명 리스트 캐시 refresh trigger");
                 crate::ui::explanation_list_view::request_refresh(
                     state.clone(),
                     session.employee_id,
@@ -126,7 +153,10 @@ async fn flush_once(state: &Arc<AppState>) {
             }
         }
         Err(e) => {
-            warn!(error = %e, count = event_ids.len(), "이벤트 배치 전송 실패 — 재시도 대기");
+            warn!(
+                error = %e, count = event_ids.len(),
+                "❌ [event_sync] 배치 송신 실패 — mark_failed → 1분 주기 재시도 대기"
+            );
             let _ = events_repo::mark_failed(&state.db, &event_ids, &e.to_string());
         }
     }
