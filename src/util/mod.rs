@@ -17,7 +17,7 @@ use chrono::{DateTime, FixedOffset, Local, Utc};
 
 /// 회사 timezone offset(분, `-720~840`) → `FixedOffset` 변환.
 /// 범위 밖이면 KST(+540) 으로 fallback.
-fn company_offset(minutes: i32) -> FixedOffset {
+pub fn company_offset(minutes: i32) -> FixedOffset {
     let secs = minutes.clamp(-720, 840) as i32 * 60;
     FixedOffset::east_opt(secs).unwrap_or_else(|| FixedOffset::east_opt(540 * 60).unwrap())
 }
