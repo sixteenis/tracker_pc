@@ -21,11 +21,14 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 
-use crate::data::dto::ExplanationSubmit;
+use chrono::{DateTime, NaiveDate, Utc};
+
+use crate::data::dto::{ExplanationSubmit, RemoteExplanation};
 use crate::app::AppState;
 use crate::constants;
 use crate::data::local::explanations_repo::{self, NewExplanation};
-use crate::data::local::idle_segments_repo;
+use crate::data::local::idle_segments_repo::{self, ExplanationStatus, IdleSegment, SegmentType};
+use crate::domain::model::user::User;
 use crate::domain::service::explanation_type_service;
 use crate::ui::Route;
 use crate::util;
@@ -65,7 +68,7 @@ pub fn show(
     form: &mut ExplanationForm,
     route: &mut Route,
 ) {
-    crate::ui::orange_header(ctx, "소명 작성", "목록", route, Route::ExplanationList);
+    crate::ui::orange_header(ctx, "소명 작성", "목록", route, Route::ExplanationList { today_only: false });
     egui::CentralPanel::default()
         .frame(egui::Frame::none().fill(crate::ui::BG).inner_margin(egui::Margin::same(20.0)))
         .show(ctx, |ui| {
@@ -88,34 +91,38 @@ fn content(
         }
     };
 
-    let segments = match idle_segments_repo::list_pending_for_employee(&state.db, &session.employee_id_str) {
-        Ok(s) => s,
-        Err(e) => {
-            ui.colored_label(egui::Color32::LIGHT_RED, format!("조회 실패: {e}"));
-            return;
-        }
-    };
-    let seg = match segments.into_iter().find(|s| s.segment_id == segment_id) {
+    // 1차: 로컬 SQLite idle_segments 에서 조회 (PENDING/EXPIRED 만).
+    // 2차: 로컬 부재 또는 status 가 PENDING/EXPIRED 가 아닌 경우 서버 캐시 (목록 화면)
+    //      에서 단건 조회. 다른 PC 에서 만든 segment / SUBMITTED 마킹된 row 도 잡힘.
+    //      (2026-05-13 핫픽스 — list view 는 서버 응답 진실 소스인데 input view 만 로컬 의존이었음)
+    let local_seg = idle_segments_repo::list_pending_for_employee(&state.db, &session.employee_id_str)
+        .ok()
+        .and_then(|segs| segs.into_iter().find(|s| s.segment_id == segment_id));
+    let seg = match local_seg {
         Some(s) => s,
-        None => {
-            ui.label("선택한 자리비움 구간을 찾을 수 없습니다.");
-            if ui.button("목록으로").clicked() {
-                *route = Route::ExplanationList;
+        None => match crate::ui::explanation_list_view::find_in_cache(segment_id) {
+            Some(remote) => remote_to_idle_segment(remote, &session, &state.device.device_id),
+            None => {
+                ui.label("선택한 자리비움 구간을 찾을 수 없습니다.");
+                if ui.button("목록으로").clicked() {
+                    *route = Route::ExplanationList { today_only: false };
+                }
+                return;
             }
-            return;
-        }
+        },
     };
 
+    let tz_offset = state.snapshot_policy().time_zone_offset_minutes;
     ui.separator();
     egui::Grid::new("seg_meta").num_columns(2).show(ui, |ui| {
         ui.label("날짜");
         ui.label(seg.work_date.format("%Y-%m-%d").to_string());
         ui.end_row();
         ui.label("시작 시간");
-        ui.label(util::format_local_time(&seg.start_time));
+        ui.label(util::format_company_time(&seg.start_time, tz_offset));
         ui.end_row();
         ui.label("종료 시간");
-        ui.label(seg.end_time.as_ref().map(util::format_local_time).unwrap_or_else(|| "진행 중".into()));
+        ui.label(seg.end_time.as_ref().map(|t| util::format_company_time(t, tz_offset)).unwrap_or_else(|| "진행 중".into()));
         ui.end_row();
         ui.label("자리비움 간격");
         ui.label(util::format_duration_human(seg.duration_seconds.unwrap_or(0)));
@@ -203,12 +210,12 @@ fn content(
     ui.add_space(12.0);
     ui.horizontal(|ui| {
         if ui.button("취소").clicked() {
-            *route = Route::ExplanationList;
+            *route = Route::ExplanationList { today_only: false };
         }
         let submit_btn = ui.add_enabled(can_submit, egui::Button::new("제출"));
         if submit_btn.clicked() {
             submit(state, &seg, form);
-            *route = Route::ExplanationList;
+            *route = Route::ExplanationList { today_only: false };
         }
     });
 
@@ -335,4 +342,32 @@ fn submit(state: &Arc<AppState>, seg: &idle_segments_repo::IdleSegment, form: &m
         // 자동 복원되고, 정상이라면 새 SUBMITTED 응답으로 안정화.
         crate::ui::explanation_list_view::request_refresh(state2.clone(), employee_id);
     });
+}
+
+/// 서버 응답(`RemoteExplanation`)을 입력 화면이 사용하는 `IdleSegment` 로 변환.
+/// 다른 PC 에서 만든 segment / 로컬에 없는 SUBMITTED row 도 입력 화면에 표시·재제출 가능하게 함.
+/// (2026-05-13 핫픽스)
+fn remote_to_idle_segment(r: RemoteExplanation, session: &User, device_id: &str) -> IdleSegment {
+    let work_date = NaiveDate::parse_from_str(&r.work_date, "%Y-%m-%d")
+        .unwrap_or_else(|_| Utc::now().date_naive());
+    let start_time = r.start_time.unwrap_or_else(Utc::now);
+    let segment_type = SegmentType::parse(&r.segment_type).unwrap_or(SegmentType::PcIdle);
+    let explanation_status = ExplanationStatus::parse(&r.explanation_status);
+    IdleSegment {
+        id: 0,
+        segment_id: r.segment_id,
+        company_id: session.company_id_str.clone(),
+        employee_id: session.employee_id_str.clone(),
+        device_id: device_id.to_string(),
+        work_date,
+        segment_type,
+        start_time,
+        end_time: r.end_time,
+        duration_seconds: r.duration_seconds,
+        applied_idle_threshold_seconds: r.applied_idle_threshold_seconds,
+        policy_scope: "DEFAULT".to_string(), // 서버 응답엔 없음 — 재제출 메타용 fallback
+        explanation_required: true,
+        explanation_deadline: r.explanation_deadline,
+        explanation_status,
+    }
 }

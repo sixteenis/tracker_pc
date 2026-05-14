@@ -18,10 +18,7 @@ use crate::app::AppState;
 use crate::data::local::events_repo;
 use crate::data::repository::auth_repository;
 use crate::domain::model::user::User;
-use crate::domain::service::{
-    attendance_service, company_service, explanation_type_service, main_info_service,
-    policy_service, subscription_service, team_service, work_status_service,
-};
+use crate::domain::service::session_caches;
 use crate::platform::credential_store;
 
 /// 로그아웃 원인 — events 채널의 `LOGOUT` 이벤트 `reason` 필드 값.
@@ -85,15 +82,9 @@ pub fn logout(state: &AppState, reason: LogoutReason) -> Result<()> {
 
     let _ = credential_store::clear();
     auth_repository::clear_local(state)?;
-    main_info_service::clear();
-    subscription_service::clear();
-    explanation_type_service::clear();
-    work_status_service::clear();
-    // 다른 계정 로그인 시 이전 사용자 정보 잔재 방지 (2026-05-13 추가).
-    company_service::clear();
-    team_service::clear();
-    attendance_service::clear();
-    policy_service::clear();
+    // 세션 의존 도메인 캐시 일괄 clear (직원·회사·팀·출근·정책·요금제·소명사유·workstatus·main_info).
+    // UI 캐시는 호출자 (settings_view, disabled_view, user_info_sync) 책임.
+    session_caches::clear_all();
     if let Ok(mut g) = CURRENT.write() {
         *g = None;
     }

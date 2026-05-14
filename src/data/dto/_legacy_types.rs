@@ -73,6 +73,15 @@ pub struct PolicySnapshot {
     pub explanation_deadline_hours: u32,
 
     pub can_track_time: bool,
+
+    /// 회사 timezone offset (분). UTC-12 ~ UTC+14 = -720 ~ 840. 기본 540(KST). (2026-05-13 신설)
+    /// 서버 `PCAGT_POLICY.TIME_ZONE_OFFSET_MINUTES` 매핑. 응답에 항상 포함.
+    #[serde(default = "default_time_zone_offset_minutes")]
+    pub time_zone_offset_minutes: i32,
+}
+
+fn default_time_zone_offset_minutes() -> i32 {
+    540
 }
 
 impl PolicySnapshot {
@@ -90,6 +99,7 @@ impl PolicySnapshot {
             lunch_allowed_minutes: defaults.default_lunch_allowed_minutes,
             explanation_deadline_hours: defaults.default_explanation_deadline_hours,
             can_track_time: false,
+            time_zone_offset_minutes: 540,
         }
     }
 }

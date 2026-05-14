@@ -48,6 +48,9 @@ pub struct PolicyPatchFields {
     pub explanation_deadline_hours: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub can_track_time: Option<bool>,
+    /// 회사 timezone offset (분). UTC-12 ~ UTC+14 = -720 ~ 840. (2026-05-13 신설)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_zone_offset_minutes: Option<i32>,
 }
 
 impl PolicyPatchFields {
@@ -68,6 +71,7 @@ impl PolicyPatchFields {
             && self.lunch_allowed_minutes.is_none()
             && self.explanation_deadline_hours.is_none()
             && self.can_track_time.is_none()
+            && self.time_zone_offset_minutes.is_none()
     }
 }
 

@@ -160,7 +160,34 @@ pub async fn run(state: Arc<AppState>) {
             IdleState::IdleOpen { segment_id } => {
                 if idle == 0 {
                     // 사용자가 돌아옴 — segment close.
+                    // 2026-05-14 정책: IDLE_STARTED + IDLE_ENDED 두 이벤트를 close 시점에 한 번에
+                    // enqueue 한 뒤 즉시 flush 호출. "진행 중" segment 가 서버에 INSERT 되는
+                    // 사고를 회피 + 1분 지연 없이 즉시 동기화.
                     let _ = idle_segments_repo::close(&state.db, segment_id, now);
+
+                    // 시작 시각 — segment_started_at 에 보관해둔 정확한 값 사용.
+                    let started = segment_started_at.unwrap_or(now);
+                    let applied_threshold = state
+                        .status
+                        .read()
+                        .map(|st| st.effective_idle_threshold_seconds)
+                        .unwrap_or(0);
+                    let scope_str = state
+                        .status
+                        .read()
+                        .map(|st| st.policy_scope.clone())
+                        .unwrap_or_default();
+
+                    enqueue_event(
+                        &state,
+                        "IDLE_STARTED",
+                        serde_json::json!({
+                            "segment_id": segment_id,
+                            "started_at": started.to_rfc3339(),
+                            "applied_idle_threshold_seconds": applied_threshold,
+                            "policy_scope": scope_str,
+                        }),
+                    );
                     enqueue_event(
                         &state,
                         "IDLE_ENDED",
@@ -169,19 +196,24 @@ pub async fn run(state: Arc<AppState>) {
                             "ended_at": now.to_rfc3339(),
                         }),
                     );
+
+                    // 즉시 송신 시도. 성공 시 끝, 실패 시 1분 주기 재시도.
+                    crate::platform::sync::event_sync::flush_now(state.clone());
+
                     if let Ok(mut st) = state.status.write() {
                         st.pc_status = PcStatus::Active;
                     }
-                    info!(segment_id, "자리비움 구간 종료");
+                    info!(segment_id, "자리비움 구간 종료 — 즉시 송신 시도");
 
                     // 자리비움이 의미 있는 길이로 끝났을 때 토스트로 알림 (백그라운드 thread).
                     // 사용자가 창을 숨겨놓고 일했더라도 트레이/알림센터로 안내됨.
                     if let Some(seg_started) = segment_started_at {
                         let mins = (now - seg_started).num_minutes().max(0);
                         if mins >= 1 {
+                            let tz_offset = state.snapshot_policy().time_zone_offset_minutes;
                             crate::platform::notify::show_explanation_request_async(
-                                crate::util::format_local_time(&seg_started),
-                                crate::util::format_local_time(&now),
+                                crate::util::format_company_time(&seg_started, tz_offset),
+                                crate::util::format_company_time(&now, tz_offset),
                                 mins,
                             );
                         }
@@ -196,7 +228,9 @@ pub async fn run(state: Arc<AppState>) {
     }
 }
 
-/// 자리비움 segment 한 건 생성 + `IDLE_STARTED` 이벤트 enqueue.
+/// 자리비움 segment 한 건 생성. **이벤트 enqueue 는 close 시점에 한 번에 처리** (2026-05-14).
+/// 진행 중 segment 가 서버에 INSERT 되지 않도록 변경 — "진행 중·진행 중" 표시 사고 회피
+/// + dangling segment (IDLE_STARTED 만 보내고 IDLE_ENDED 못 보냄) 위험 제거.
 /// 세션이 없으면 `None` (방어 코드 — can_track_time 가드 뒤이므로 사실상 없어야 함).
 fn open_segment(
     state: &Arc<AppState>,
@@ -213,7 +247,10 @@ fn open_segment(
         company_id: session.company_id_str.clone(),
         employee_id: session.employee_id_str.clone(),
         device_id: state.device.device_id.clone(),
-        work_date: started.date_naive(),
+        // work_date 는 사용자 거주 시간대(로컬) 기준이어야 함.
+        // UTC 기준이면 KST 새벽~오전 9시 segment 가 전날로 기록되어 "오늘 발생한 소명"
+        // 필터에서 누락된다. 사용자 결정 2026-05-13.
+        work_date: started.with_timezone(&Local).date_naive(),
         segment_type: SegmentType::PcIdle,
         start_time: started,
         end_time: None,
@@ -230,16 +267,7 @@ fn open_segment(
         }
     };
 
-    enqueue_event(
-        state,
-        "IDLE_STARTED",
-        serde_json::json!({
-            "segment_id": segment_id,
-            "started_at": started.to_rfc3339(),
-            "applied_idle_threshold_seconds": threshold,
-            "policy_scope": scope,
-        }),
-    );
+    // 의도적으로 IDLE_STARTED enqueue 안 함 — close 시점에 한 번에 enqueue.
     Some(segment_id)
 }
 

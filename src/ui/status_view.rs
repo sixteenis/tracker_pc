@@ -34,23 +34,35 @@ pub fn show(ctx: &egui::Context, state: &Arc<AppState>, route: &mut Route) {
         crate::domain::service::subscription_service::current().is_some()
             && !crate::domain::service::subscription_service::pin_plus_active();
     let session = state.session.read().unwrap().clone();
-    let today = Utc::now().date_naive();
+    // 로컬 기준 — UTC 면 KST 새벽~오전 9시에 어제 segment 가 잡히는 버그 발생 (2026-05-13).
+    let today = chrono::Local::now().date_naive();
 
     let today_segments = session
         .as_ref()
         .and_then(|s| idle_segments_repo::list_for_date(&state.db, &s.employee_id_str, today).ok())
         .unwrap_or_default();
 
-    let pending_count = today_segments
-        .iter()
-        .filter(|s| {
-            matches!(
-                s.explanation_status,
-                idle_segments_repo::ExplanationStatus::Pending
-                    | idle_segments_repo::ExplanationStatus::Expired
-            )
-        })
-        .count();
+    // 캐시 보장 — 캐시 비어있으면 list_explanations 비동기 fetch trigger.
+    // 이미 로드됐거나 진행 중이면 no-op.
+    if let Some(s) = session.as_ref() {
+        crate::ui::explanation_list_view::ensure_cache_loaded(state, s.employee_id);
+    }
+
+    // 메인 "소명 N건" 카운트 — 서버 캐시(진실 소스) 우선, 비어있으면 로컬 fallback.
+    // (2026-05-13: 리스트 화면과 데이터 소스 통일)
+    let pending_count = crate::ui::explanation_list_view::today_pending_count_cached()
+        .unwrap_or_else(|| {
+            today_segments
+                .iter()
+                .filter(|s| {
+                    matches!(
+                        s.explanation_status,
+                        idle_segments_repo::ExplanationStatus::Pending
+                            | idle_segments_repo::ExplanationStatus::Expired
+                    )
+                })
+                .count()
+        });
 
     // ── 오렌지 헤더 ───────────────────────────────────────────────
     egui::TopBottomPanel::top("status_header")
@@ -218,7 +230,8 @@ pub fn show(ctx: &egui::Context, state: &Arc<AppState>, route: &mut Route) {
                                                             )
                                                             .clicked()
                                                         {
-                                                            *route = Route::ExplanationList;
+                                                            // 출퇴근 카드 진입 — 오늘 발생분만 (today_only=true).
+                                                            *route = Route::ExplanationList { today_only: true };
                                                         }
                                                     },
                                                 );
@@ -232,6 +245,24 @@ pub fn show(ctx: &egui::Context, state: &Arc<AppState>, route: &mut Route) {
                     ui.add_space(10.0);
 
                     // ── 통계 카드 2개 ──────────────────────────────
+                    // 통계 출처: 서버 캐시(진실 소스) 우선, 비어있으면 로컬 fallback.
+                    // (2026-05-13: 리스트 화면과 데이터 소스 통일)
+                    let (idle_total, idle_count, max_idle) =
+                        crate::ui::explanation_list_view::today_stats_cached()
+                            .unwrap_or_else(|| {
+                                let total: i64 = today_segments
+                                    .iter()
+                                    .filter_map(|s| s.duration_seconds)
+                                    .sum();
+                                let cnt = today_segments.len();
+                                let mx = today_segments
+                                    .iter()
+                                    .filter_map(|s| s.duration_seconds)
+                                    .max()
+                                    .unwrap_or(0);
+                                (total, cnt, mx)
+                            });
+
                     let total_active = {
                         let now = Utc::now();
                         let local_now = now.with_timezone(&Local);
@@ -247,16 +278,8 @@ pub fn show(ctx: &egui::Context, state: &Arc<AppState>, route: &mut Route) {
                         .map(|dt| dt.with_timezone(&Utc))
                         .unwrap_or(now - chrono::Duration::hours(8));
                         let elapsed = (now - midnight_utc).num_seconds().max(0);
-                        let idle_total: i64 =
-                            today_segments.iter().filter_map(|s| s.duration_seconds).sum();
                         (elapsed - idle_total).max(0)
                     };
-                    let idle_count = today_segments.len();
-                    let max_idle = today_segments
-                        .iter()
-                        .filter_map(|s| s.duration_seconds)
-                        .max()
-                        .unwrap_or(0);
 
                     let stat_row_h = 82.0; // 두 카드 동일 높이
                     let half_w = (content_w - gap) / 2.0;
@@ -402,7 +425,8 @@ pub fn show(ctx: &egui::Context, state: &Arc<AppState>, route: &mut Route) {
                                 match action {
                                     0 => *route = Route::Settings,
                                     1 => tracing::info!("수동 동기화 요청"),
-                                    _ => *route = Route::ExplanationList,
+                                    // 하단 "전체 소명 내역" 버튼 — 전체 + 사용자 필터 유지.
+                                    _ => *route = Route::ExplanationList { today_only: false },
                                 }
                             }
                             if action < 2 {

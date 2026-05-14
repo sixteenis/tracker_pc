@@ -49,6 +49,7 @@ impl MockClient {
             lunch_allowed_minutes: 60,
             explanation_deadline_hours: 48,
             can_track_time: true,
+            time_zone_offset_minutes: 540,
         }
     }
 
@@ -263,6 +264,9 @@ impl ApiClient for MockClient {
             }
             if let Some(v) = req.patch.can_track_time {
                 p.can_track_time = v;
+            }
+            if let Some(v) = req.patch.time_zone_offset_minutes {
+                p.time_zone_offset_minutes = v;
             }
             Ok(p)
         }

@@ -710,12 +710,13 @@ fn company_policy_tab(
                 "라이브 추적 허용 (status.can_track_time)",
                 &live.can_track_time.to_string(),
             );
+            let tz_offset = state.snapshot_policy().time_zone_offset_minutes;
             info_row(
                 ui,
                 "마지막 정책 동기화 (status.last_policy_sync_at)",
                 &live
                     .last_policy_sync_at
-                    .map(|t| t.to_rfc3339())
+                    .map(|t| crate::util::format_company_dt(&t, tz_offset))
                     .unwrap_or_else(|| "—".to_string()),
             );
         });

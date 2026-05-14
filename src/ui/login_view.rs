@@ -289,6 +289,9 @@ fn start_login(state: &Arc<AppState>, form: &mut LoginForm) {
 
     let runtime = state.runtime.clone();
     runtime.spawn(async move {
+        // UI 메모리 캐시(소명 내역) 사전 비움 — 이전 사용자 데이터 노출 방지.
+        // 도메인 캐시는 user_usecase::login 내부 finalize_session 가 일괄 clear.
+        crate::ui::explanation_list_view::clear_cache();
         let result = crate::domain::usecase::user_usecase::login(&state, &email, &pw, auto).await;
         if let Ok(mut e) = err_slot.lock() {
             *e = result.as_ref().err().map(|err| err.to_string());

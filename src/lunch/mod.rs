@@ -110,6 +110,7 @@ mod tests {
             lunch_allowed_minutes: 60,
             explanation_deadline_hours: 48,
             can_track_time: true,
+            time_zone_offset_minutes: 540,
         }
     }
 

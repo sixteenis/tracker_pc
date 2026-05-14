@@ -51,7 +51,9 @@ pub const TIMELINE_LOCKED: egui::Color32 = egui::Color32::from_rgb(160, 160, 165
 pub enum Route {
     Login,
     Status,
-    ExplanationList,
+    /// 소명 내역 화면. `today_only=true` 면 오늘 발생분만 필터 + 타이틀 "오늘 발생한 소명".
+    /// `today_only=false` 는 기존 "전체 소명 내역" + 사용자 필터 탭 유지.
+    ExplanationList { today_only: bool },
     ExplanationInput { segment_id: String },
     Settings,
     UpdateNotice,
@@ -133,7 +135,8 @@ impl App for PinpleApp {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                         if self.state.is_logged_in() {
-                            self.route = Route::ExplanationList;
+                            // 트레이 "근무시간 소명" 진입은 전체 내역 화면으로.
+                            self.route = Route::ExplanationList { today_only: false };
                         }
                     }
                     Quit => {
@@ -177,13 +180,14 @@ impl App for PinpleApp {
             Route::Status => {
                 status_view::show(ctx, &self.state, &mut self.route);
             }
-            Route::ExplanationList => {
+            Route::ExplanationList { today_only } => {
                 explanation_list_view::show(
                     ctx,
                     &self.state,
                     &mut self.route,
                     &mut self.last_toast_at,
                     &mut self.explanation_filter,
+                    today_only,
                 );
             }
             Route::ExplanationInput { segment_id } => {
@@ -293,6 +297,8 @@ fn kick_auto_login(state: Arc<AppState>) {
     use crate::domain::usecase::user_usecase;
     let runtime = state.runtime.clone();
     runtime.spawn(async move {
+        // UI 캐시 사전 비움 — 부팅 직후라 사실상 빈 상태이지만 일관성 차원에서 명시.
+        crate::ui::explanation_list_view::clear_cache();
         match user_usecase::auto_login(&state).await {
             Ok(Some(_)) => info!("자동로그인 성공"),
             Ok(None) => info!("자동로그인 대상 없음"),

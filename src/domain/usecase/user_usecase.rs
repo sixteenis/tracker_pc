@@ -30,8 +30,8 @@ use crate::data::repository::auth_repository::{self, Authenticated};
 use crate::data::repository::{main_info_repository, subscription_repository};
 use crate::domain::model::user::User;
 use crate::domain::service::{
-    explanation_type_service, main_info_service, subscription_service, user_service,
-    work_status_service,
+    explanation_type_service, main_info_service, session_caches, subscription_service,
+    user_service, work_status_service,
 };
 
 /// 사용자 입력 평문 자격증명으로 로그인. UI 로그인 버튼이 호출자.
@@ -64,6 +64,12 @@ async fn finalize_session(
     authed: Authenticated,
     auto_login: bool,
 ) -> Result<User> {
+    // 다른 사용자 / 이전 세션 잔재로부터의 데이터 노출 방지.
+    // 도메인 캐시(직원·회사·팀·출근·정책·요금제·소명사유·workstatus·main_info) 전부 비우고
+    // 아래 fetch / 폴링이 서버 응답으로 새로 채운다. UI 캐시는 호출자가 처리
+    // (logout 패턴과 일관 — `user_service::logout` 도 UI 캐시는 호출자 책임).
+    session_caches::clear_all();
+
     let subscription =
         subscription_repository::fetch(state, authed.user.company_id, authed.user.member_id)
             .await?;
@@ -120,6 +126,44 @@ async fn finalize_session(
             info!(result = resp.result, "get_workstatus 로그인 직후 로드");
         }
         Err(e) => tracing::warn!(error = %e, "get_workstatus 로그인 직후 로드 실패 — user_info_sync 가 재시도"),
+    }
+
+    // 소명 리스트 로그인 직후 1회 호출 — 메인 화면 진입 첫 프레임부터 정확한 카운트/통계.
+    // 캐시 비어있으면 status_view 가 ensure_cache_loaded 로 trigger 하지만, 비동기 spawn
+    // 이라 첫 프레임은 비어있게 됨 → 깜박임 회피 위해 finalize 안에서 동기 fetch + store.
+    // 실패해도 fatal X — fallback 으로 로컬 카운트 사용. (2026-05-13)
+    match state.api.list_explanations(user.employee_id).await {
+        Ok(items) => {
+            let count = items.len();
+            crate::ui::explanation_list_view::store_response_for(user.employee_id, items);
+            info!(count, "worktime-explanations 로그인 직후 로드");
+        }
+        Err(e) => tracing::warn!(error = %e, "worktime-explanations 로그인 직후 로드 실패 — 메인 화면 진입 시 재시도"),
+    }
+
+    // policy 로그인 직후 1회 호출 — idle_detector 가 fallback 임계치(테스트값)로 동작하는
+    // 문제 회피. policy_sync 가 30분 주기라 첫 호출까지 그 시간 동안 잘못된 임계치
+    // 사용. 실패해도 policy_sync 가 재시도 (이전 값 또는 default 유지).
+    match state.api.get_policy(user.employee_id).await {
+        Ok(p) => {
+            if let Ok(mut s) = state.status.write() {
+                s.effective_idle_threshold_seconds = p.effective_idle_threshold_seconds;
+                s.policy_scope = p.policy_scope.clone();
+                s.policy_version = p.policy_version;
+                s.can_track_time = s.can_track_time && p.can_track_time;
+                s.last_policy_sync_at = Some(Utc::now());
+            }
+            if let Ok(mut policy) = state.policy.write() {
+                *policy = p.clone();
+            }
+            info!(
+                effective_idle_threshold_seconds = p.effective_idle_threshold_seconds,
+                policy_scope = %p.policy_scope,
+                policy_version = p.policy_version,
+                "policy 로그인 직후 로드"
+            );
+        }
+        Err(e) => tracing::warn!(error = %e, "policy 로그인 직후 로드 실패 — policy_sync 가 재시도"),
     }
 
     // PRESENCE — LOGIN_SUCCESS (수동) / AUTO_LOGIN_SUCCESS (자동). 서버가 PCAGT_PRESENCE_LOG 매핑.

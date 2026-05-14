@@ -41,66 +41,94 @@ const EVENT_BATCH_INTERVAL_SECONDS: u64 = 60;
 /// 메인 배치 전송 루프.
 pub async fn run(state: Arc<AppState>) {
     let interval = Duration::from_secs(EVENT_BATCH_INTERVAL_SECONDS);
-    let limit = state.config.intervals.max_events_per_batch.max(1);
 
     loop {
         tokio::time::sleep(interval).await;
-
-        let maybe_session = state.session.read().unwrap().clone();
-        let session = match maybe_session {
-            Some(s) => s,
-            None => continue,
-        };
-
-        let pending = match events_repo::pending_batch(&state.db, limit) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(error = %e, "PENDING 이벤트 조회 실패");
-                continue;
-            }
-        };
-        if pending.is_empty() {
-            continue;
-        }
-
-        let event_ids: Vec<String> = pending.iter().map(|e| e.event_id.clone()).collect();
-        let entries: Vec<EventEntry> = pending
-            .into_iter()
-            .map(|e| EventEntry {
-                event_id: e.event_id,
-                event_type: e.event_type,
-                event_time: e.event_time,
-                payload: serde_json::from_str(&e.payload_json)
-                    .unwrap_or(serde_json::Value::Null),
-            })
-            .collect();
-
-        let batch = EventsBatch {
-            company_id: session.company_id_str.clone(),
-            employee_id: session.employee_id_str.clone(),
-            device_id: state.device.device_id.clone(),
-            events: entries,
-        };
-
-        match state.api.send_events(batch).await {
-            Ok(resp) => {
-                let count = resp.accepted_event_ids.len();
-                let _ = events_repo::mark_success(&state.db, &resp.accepted_event_ids);
-                if let Ok(mut s) = state.status.write() {
-                    s.last_event_sync_at = Some(Utc::now());
-                }
-                info!(count, "이벤트 배치 전송 성공");
-            }
-            Err(e) => {
-                warn!(error = %e, count = event_ids.len(), "이벤트 배치 전송 실패 — 재시도 대기");
-                let _ = events_repo::mark_failed(&state.db, &event_ids, &e.to_string());
-            }
-        }
+        flush_once(&state).await;
 
         // 같은 주기에 소명 제출 재시도 — 즉시 제출 실패 / 네트워크 끊김으로 로컬에
-        // 남은 PENDING/FAILED row 를 한 건씩 재전송. 성공 시 로컬 row 물리 삭제
-        // (서버가 진실 소스). [[T-20260512-04_소명내역_서버진실소스_재시도큐]] 참조.
-        retry_pending_explanations(&state, &session).await;
+        // 남은 PENDING/FAILED row 를 한 건씩 재전송. 성공 시 로컬 row 물리 삭제.
+        let maybe_session = state.session.read().unwrap().clone();
+        if let Some(session) = maybe_session {
+            retry_pending_explanations(&state, &session).await;
+        }
+    }
+}
+
+/// 외부 호출용 — 자리비움 종료(close) 같은 즉시 송신이 필요한 시점에 spawn 해서 사용.
+/// `local_events` PENDING/FAILED 가 있으면 한 사이클을 비동기로 한 번 돌린다.
+/// 1분 루프와 별도로 동작 — 중복 호출돼도 멱등 (서버가 event_id UNIQUE).
+pub fn flush_now(state: Arc<AppState>) {
+    state.runtime.clone().spawn(async move {
+        flush_once(&state).await;
+    });
+}
+
+/// 한 사이클의 송신 본문 (run + flush_now 공통).
+async fn flush_once(state: &Arc<AppState>) {
+    let limit = state.config.intervals.max_events_per_batch.max(1);
+
+    let maybe_session = state.session.read().unwrap().clone();
+    let session = match maybe_session {
+        Some(s) => s,
+        None => return,
+    };
+
+    let pending = match events_repo::pending_batch(&state.db, limit) {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(error = %e, "PENDING 이벤트 조회 실패");
+            return;
+        }
+    };
+    if pending.is_empty() {
+        return;
+    }
+
+    let event_ids: Vec<String> = pending.iter().map(|e| e.event_id.clone()).collect();
+    let entries: Vec<EventEntry> = pending
+        .into_iter()
+        .map(|e| EventEntry {
+            event_id: e.event_id,
+            event_type: e.event_type,
+            event_time: e.event_time,
+            payload: serde_json::from_str(&e.payload_json)
+                .unwrap_or(serde_json::Value::Null),
+        })
+        .collect();
+
+    let has_segment_event = entries.iter().any(|e| {
+        matches!(e.event_type.as_str(), "IDLE_STARTED" | "IDLE_ENDED" | "NO_PC_RECORD")
+    });
+
+    let batch = EventsBatch {
+        company_id: session.company_id_str.clone(),
+        employee_id: session.employee_id_str.clone(),
+        device_id: state.device.device_id.clone(),
+        events: entries,
+    };
+
+    match state.api.send_events(batch).await {
+        Ok(resp) => {
+            let count = resp.accepted_event_ids.len();
+            let accepted_any = !resp.accepted_event_ids.is_empty();
+            let _ = events_repo::mark_success(&state.db, &resp.accepted_event_ids);
+            if let Ok(mut s) = state.status.write() {
+                s.last_event_sync_at = Some(Utc::now());
+            }
+            info!(count, "이벤트 배치 전송 성공");
+
+            if has_segment_event && accepted_any {
+                crate::ui::explanation_list_view::request_refresh(
+                    state.clone(),
+                    session.employee_id,
+                );
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, count = event_ids.len(), "이벤트 배치 전송 실패 — 재시도 대기");
+            let _ = events_repo::mark_failed(&state.db, &event_ids, &e.to_string());
+        }
     }
 }
 

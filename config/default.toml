@@ -24,9 +24,10 @@ update_check_interval_seconds     = 43200
 max_events_per_batch              = 50
 
 [policy_defaults]
-# 서버 정책 미수신 시 fallback.
-# ※ 테스트용으로 5초로 설정. 운영 시에는 600(10분) 등으로 복원할 것.
-default_idle_threshold_seconds    = 5
+# 서버 정책 미수신 시 fallback. (서버 응답 받기 전까지의 임계치)
+# 서버 PATCH 범위 하한과 동일하게 180초(3분). 로그인 직후 finalize_session 가
+# 서버 정책을 즉시 받아오므로 이 값이 실제로 쓰이는 시점은 극히 짧음.
+default_idle_threshold_seconds    = 180
 default_lunch_start_time          = "11:30"
 default_lunch_end_time            = "14:00"
 default_lunch_allowed_minutes     = 60

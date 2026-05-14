@@ -88,18 +88,23 @@ struct ListCache {
 static CACHE: Lazy<RwLock<ListCache>> = Lazy::new(|| RwLock::new(ListCache::default()));
 
 /// 화면 진입점 — 헤더 + 탭 + 콘텐츠.
+///
+/// `today_only=true` 면 오늘(로컬) 발생한 segment 만 표시 + 타이틀 "오늘 발생한 소명".
+/// 출퇴근 카드의 "소명 N건 ▶" 진입 전용. `false` 면 기존 전체 내역.
 pub fn show(
     ctx: &egui::Context,
     state: &Arc<AppState>,
     route: &mut Route,
     last_toast_at: &mut Option<DateTime<Utc>>,
     filter: &mut ExplanationFilter,
+    today_only: bool,
 ) {
-    crate::ui::orange_header(ctx, "전체 소명 내역", "메인", route, Route::Status);
+    let title = if today_only { "오늘 발생한 소명" } else { "전체 소명 내역" };
+    crate::ui::orange_header(ctx, title, "메인", route, Route::Status);
     egui::CentralPanel::default()
         .frame(egui::Frame::none().fill(crate::ui::BG).inner_margin(egui::Margin::same(20.0)))
         .show(ctx, |ui| {
-            content(ui, state, route, last_toast_at, filter);
+            content(ui, state, route, last_toast_at, filter, today_only);
         });
 }
 
@@ -109,6 +114,7 @@ fn content(
     route: &mut Route,
     last_toast_at: &mut Option<DateTime<Utc>>,
     filter: &mut ExplanationFilter,
+    today_only: bool,
 ) {
     let session = match state.session.read().unwrap().clone() {
         Some(s) => s,
@@ -130,7 +136,17 @@ fn content(
             g.error.clone(),
         )
     };
-    let items_ref: &[RemoteExplanation] = items.as_deref().unwrap_or(&[]);
+    let all_items: &[RemoteExplanation] = items.as_deref().unwrap_or(&[]);
+
+    // today_only=true 면 오늘(로컬) 발생한 segment 만 — 탭 카운트도 같은 모집단 사용해
+    // 사용자가 보는 숫자와 표시 row 가 일치하도록.
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let scoped_items: Vec<RemoteExplanation> = all_items
+        .iter()
+        .filter(|s| !today_only || s.work_date == today)
+        .cloned()
+        .collect();
+    let items_ref: &[RemoteExplanation] = &scoped_items;
 
     // ── 탭 바 (상태별 카테고리) ─────────────────────────────────
     ui.horizontal(|ui| {
@@ -264,6 +280,7 @@ fn content(
             ui.strong("");
             ui.end_row();
 
+            let tz_offset = state.snapshot_policy().time_zone_offset_minutes;
             for seg in &filtered {
                 let work_date = NaiveDate::parse_from_str(&seg.work_date, "%Y-%m-%d")
                     .map(|d| d.format("%Y-%m-%d").to_string())
@@ -272,13 +289,13 @@ fn content(
                 ui.label(
                     seg.start_time
                         .as_ref()
-                        .map(util::format_local_time)
+                        .map(|t| util::format_company_time(t, tz_offset))
                         .unwrap_or_else(|| "—".into()),
                 );
                 ui.label(
                     seg.end_time
                         .as_ref()
-                        .map(util::format_local_time)
+                        .map(|t| util::format_company_time(t, tz_offset))
                         .unwrap_or_else(|| "진행 중".into()),
                 );
                 ui.label(
@@ -296,7 +313,7 @@ fn content(
                 ui.label(
                     seg.explanation_deadline
                         .as_ref()
-                        .map(util::format_local_dt)
+                        .map(|t| util::format_company_dt(t, tz_offset))
                         .unwrap_or_else(|| "—".into()),
                 );
                 // 소명하기 버튼 — 사용자 액션 가능한 상태(PENDING/EXPIRED)에서만.
@@ -399,4 +416,68 @@ pub fn mark_submitted_optimistic(segment_id: &str) {
 /// 외부에서 강제 재조회 트리거 — 제출 성공/실패 직후 서버 진실 동기화.
 pub fn request_refresh(state: Arc<AppState>, employee_id: i64) {
     trigger_fetch(state, employee_id);
+}
+
+/// 캐시(서버 응답) 에서 단건 조회 — 입력 화면이 로컬에 없는 segment 도 찾을 수 있도록.
+/// 2026-05-13: 입력 화면 "찾을 수 없습니다" 사고 핫픽스. 다른 PC 에서 만든 segment
+/// 또는 SUBMITTED 마킹된 row 도 캐시에는 있으므로 fallback 으로 사용.
+pub fn find_in_cache(segment_id: &str) -> Option<RemoteExplanation> {
+    let g = CACHE.read().ok()?;
+    g.items.as_ref()?.iter().find(|s| s.segment_id == segment_id).cloned()
+}
+
+/// 메인 화면 "소명 N건" 카운트용 — 서버 캐시에서 오늘(로컬) 발생 + PENDING/EXPIRED 만 집계.
+/// 캐시 비어있으면 `None` 반환 → 호출자가 로컬 fallback 으로 대체.
+/// (2026-05-13: 메인 카운트와 리스트 카운트 데이터 소스 통일)
+pub fn today_pending_count_cached() -> Option<usize> {
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let g = CACHE.read().ok()?;
+    let items = g.items.as_ref()?;
+    let cnt = items
+        .iter()
+        .filter(|s| s.work_date == today)
+        .filter(|s| {
+            let st = ExplanationStatus::parse(&s.explanation_status);
+            matches!(st, ExplanationStatus::Pending | ExplanationStatus::Expired)
+        })
+        .count();
+    Some(cnt)
+}
+
+/// 메인 화면 "오늘 미사용 누적" 통계용 — 서버 캐시 기반 (status 무관 전체 segment 집계).
+/// 반환: `(total_seconds, count, max_seconds)`. 캐시 비어있으면 `None`.
+/// (2026-05-13: 통계도 서버 진실 소스로 통일)
+pub fn today_stats_cached() -> Option<(i64, usize, i64)> {
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let g = CACHE.read().ok()?;
+    let items = g.items.as_ref()?;
+    let today_items: Vec<&RemoteExplanation> =
+        items.iter().filter(|s| s.work_date == today).collect();
+    let total: i64 = today_items.iter().filter_map(|s| s.duration_seconds).sum();
+    let count = today_items.len();
+    let max = today_items
+        .iter()
+        .filter_map(|s| s.duration_seconds)
+        .max()
+        .unwrap_or(0);
+    Some((total, count, max))
+}
+
+/// 화면 외부에서 캐시 로드 보장 — 메인 화면 진입 시 호출하면 캐시가 비어있을 때만 fetch.
+/// 이미 로드돼 있거나 진행 중이면 no-op (`ensure_loaded` 의 중복 호출 가드 활용).
+pub fn ensure_cache_loaded(state: &Arc<AppState>, employee_id: i64) {
+    ensure_loaded(state, employee_id);
+}
+
+/// 외부(예: 로그인 직후 `finalize_session`) 에서 이미 fetch 한 결과를 캐시에 직접 저장.
+/// 메인 화면 진입 첫 프레임부터 정확한 카운트/통계 표시되게 한다.
+/// (2026-05-13: 로그인 직후 list_explanations 1회 호출 후 결과 store 용)
+pub fn store_response_for(employee_id: i64, items: Vec<RemoteExplanation>) {
+    if let Ok(mut g) = CACHE.write() {
+        g.items = Some(items);
+        g.loading = false;
+        g.error = None;
+        g.employee_id = employee_id;
+        g.last_fetched_at = Some(Utc::now());
+    }
 }
